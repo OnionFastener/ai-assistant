@@ -101,6 +101,8 @@ _BUG_WORDS = ("error", "exception", "crash", "traceback", "stack trace", "wrong"
 _FEATURE_WORDS = ("feature", "enhance", "export", "support", "ability to", "add ", "new ", "improve")
 _DECISION_WORDS = ("decision", "we should", "drop support", "policy", "strategy", "deprecat")
 
+_TYPE_BOOST = {"bug-fix": 1.0, "new-feature": 0.4}
+
 
 def _mock_triage(ticket_ctx: dict, paths: list[TriagePath]) -> TriageResult:
     text = f"{ticket_ctx.get('summary','')} {ticket_ctx.get('description','')}".lower()
@@ -114,6 +116,11 @@ def _mock_triage(ticket_ctx: dict, paths: list[TriagePath]) -> TriageResult:
         ("need-more-info", needs_info),
         ("need-my-input", _score(text, _DECISION_WORDS) + (1.0 if "?" in text else 0.0)),
     ]
+    issue_type = str(ticket_ctx.get("issue_type") or "").lower()
+    if any(s in issue_type for s in ("bug", "defect", "incident", "problem")):
+        cands[0] = ("bug-fix", cands[0][1] + _TYPE_BOOST["bug-fix"])
+    elif any(s in issue_type for s in ("story", "feature", "enhancement", "epic")):
+        cands[1] = ("new-feature", cands[1][1] + _TYPE_BOOST["new-feature"])
     enabled = {p.id for p in paths if p.enabled and p.valid}
     avail = [(pid, s) for pid, s in cands if pid in enabled]
     if not avail:

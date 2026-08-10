@@ -31,6 +31,6 @@
     "action": ""
   },
   "run": {
-    "max_tickets_per_run": 3
+    "max_tickets_per_run": 50
   }
 }

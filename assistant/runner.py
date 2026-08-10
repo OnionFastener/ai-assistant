@@ -75,7 +75,7 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
             continue
         _log(db, run_id, f"searching JQL '{label}'")
         try:
-            found = jira.search(jql, max_results=settings.max_tickets_per_run)
+            found = jira.search(jql, max_results=settings.max_tickets_per_run + 50)
         except Exception as e:  # noqa: BLE001
             _log(db, run_id, f"JQL '{label}' failed: {e}", level="error")
             run.status = "failed"
@@ -85,6 +85,21 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
             return
         for t in found:
             tickets_by_key.setdefault(t["key"], t)
+
+    # Local dedupe on key from pending plans (DESIGN §6): a ticket already waiting
+    # for review is not re-fetched, so repeated runs cannot pile up duplicate plans.
+    keys = list(tickets_by_key)
+    if keys:
+        pending = (
+            db.query(ActionPlan)
+            .join(Ticket, ActionPlan.ticket_id == Ticket.id)
+            .filter(Ticket.key.in_(keys), ActionPlan.review_status == "pending")
+            .all()
+        )
+        skipping = {p.ticket.key for p in pending}
+        if skipping:
+            tickets_by_key = {k: v for k, v in tickets_by_key.items() if k not in skipping}
+            _log(db, run_id, f"skipped {len(skipping)} tickets already awaiting review")
 
     limited = list(tickets_by_key.values())[: settings.max_tickets_per_run]
     if not limited:
@@ -162,11 +177,27 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
 
 
 def _make_plan(db, run_id: int, row: Ticket, result, paths) -> None:
+    _supersede_prior_pending(db, row.key)
     path = get_path(paths, result.path_id)
     if path and path.required_backend == "github":
         _make_code_plan(db, run_id, row, result, path)
     else:
         _make_chat_plan(db, run_id, row, result, path)
+
+
+def _supersede_prior_pending(db, ticket_key: str) -> None:
+    """A new plan for a ticket invalidates older pending plans of the same ticket
+    (one actionable plan per ticket at any time). DESIGN: marked `superseded`."""
+    older = (
+        db.query(ActionPlan)
+        .join(Ticket, ActionPlan.ticket_id == Ticket.id)
+        .filter(Ticket.key == ticket_key, ActionPlan.review_status == "pending")
+        .all()
+    )
+    for plan in older:
+        plan.review_status = "superseded"
+    if older:
+        db.commit()
 
 
 def _make_code_plan(db, run_id: int, row: Ticket, result, path) -> None:

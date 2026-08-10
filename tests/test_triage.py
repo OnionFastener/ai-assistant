@@ -67,8 +67,15 @@ def test_mock_triage_routes_feature(paths):
 
 
 def test_mock_triage_routes_more_info(paths):
-    r = _mock_triage({"key": "DEMO-5", "summary": "QL3 report totals don't match", "description": "No repro steps provided."}, paths)
+    r = _mock_triage({"key": "DEMO-5", "summary": "QL3 report totals don't match",
+                      "description": "No repro steps provided."}, paths)
     assert r.path_id == "need-more-info"
+
+
+def test_mock_triage_routes_bug_type_even_with_weak_keywords(paths):
+    r = _mock_triage({"key": "DEMO-5", "summary": "QL3 report totals don't match",
+                      "description": "No repro steps provided.", "issue_type": "Bug"}, paths)
+    assert r.path_id == "bug-fix"
 
 
 def test_mock_triage_routes_question_to_human(paths):

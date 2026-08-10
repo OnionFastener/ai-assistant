@@ -90,6 +90,29 @@ def test_chat_flow_edit_approve_reject(authed):
     assert keys == ["DEMO-1", "DEMO-2", "DEMO-3", "DEMO-4", "DEMO-5"]
 
 
+def test_manual_rerun_supersedes_prior_pending(authed):
+    """Re-running manually must not pile up duplicate pending plans: tickets already
+    awaiting review are skipped at fetch time (DESIGN §6 local dedupe on key)."""
+    c = authed["client"]
+    _run_and_wait(authed)
+    first = c.get("/api/approvals").json()
+    assert len(first) == 5
+    first_ids = {a["plan"]["id"] for a in first}
+
+    _run_and_wait(authed)
+    second = c.get("/api/approvals").json()
+    assert len(second) == 5, f"duplicates: {len(second)} pending plans"
+    assert {a["plan"]["id"] for a in second} == first_ids
+
+    db = SessionLocal()
+    not_superseded = (db.query(ActionPlan)
+                      .filter(ActionPlan.id.in_(first_ids),
+                              ActionPlan.review_status == "pending")
+                      .count())
+    assert not_superseded == 5, "pending plans must survive an idempotent re-run"
+    db.close()
+
+
 def test_bugfix_sandbox_push_to_pr(authed, monkeypatch):
     """The e2e_v2 flow: bug-fix plan patch really reaches the mock remote + PR."""
     from assistant.config import settings
@@ -99,7 +122,8 @@ def test_bugfix_sandbox_push_to_pr(authed, monkeypatch):
     run_id = _run_and_wait(authed)
 
     approvals = c.get("/api/approvals").json()
-    bug = next(a for a in approvals if a["plan"]["path_id"] == "bug-fix")
+    bug = next(a for a in approvals
+               if a["plan"]["path_id"] == "bug-fix" and a["ticket"]["key"] == "DEMO-1")
     acts = bug["plan"]["actions"]
     kinds = [a["kind"] for a in acts]
     assert kinds == ["comment", "push_branch", "create_pr", "transition"], kinds

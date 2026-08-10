@@ -74,7 +74,6 @@ def test_manual_run_mock_completes_with_approvals(authed):
     assert len(approvals) == 5
     assert any(a["plan"]["path_id"] == "bug-fix" for a in approvals)
     assert any(a["plan"]["path_id"] == "new-feature" for a in approvals)
-    assert any(a["plan"]["path_id"] == "need-more-info" for a in approvals)
     assert any(a["plan"]["path_id"] == "need-my-input" for a in approvals)
 
 
