@@ -1,0 +1,11 @@
+{
+  "name": "New Feature",
+  "enabled": true,
+  "allowed_actions": ["comment", "transition", "assign"],
+  "required_backend": null,
+  "approval": { "editable": ["comment", "assignee"] },
+  "default_actions": [
+    { "kind": "comment", "params": { "body": "" } },
+    { "kind": "assign", "params": { "assignee": "me" } }
+  ]
+}

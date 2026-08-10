@@ -1,0 +1,4 @@
+{
+  "_comment": "Per-ticket GitHub repo overrides (also editable in the web console: Config page). Used when the ticket itself contains no github.com URL. Format: KEY=owner/repo, plus an optional default. Delete this file or empty it if you don't need manual control.",
+  "default": ""
+}

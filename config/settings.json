@@ -1,0 +1,36 @@
+{
+  "jql_queries": [
+    {
+      "name": "OWEN unresolved unassigned",
+      "jql": "project = OWEN AND resolution = Unresolved ORDER BY created ASC"
+    }
+  ],
+  "schedule": {
+    "enabled": false,
+    "hour": 2,
+    "minute": 0
+  },
+  "jira": {
+    "base_url": "https://seeksong.atlassian.net",
+    "email": "owensong.ca@gmail.com",
+    "account_id": "",
+    "devinfo_field": ""
+  },
+  "github": {
+    "repo": "OnionFastener/onionfastener.github.io",
+    "repos": [
+      "OnionFastener/onionfastener.github.io",
+      "OnionFastener/wordle-clone"
+    ],
+    "project_repo_map": {},
+    "host": "github.com",
+    "ssh_url": ""
+  },
+  "models": {
+    "triage": "",
+    "action": ""
+  },
+  "run": {
+    "max_tickets_per_run": 3
+  }
+}
