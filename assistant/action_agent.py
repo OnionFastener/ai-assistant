@@ -133,8 +133,8 @@ def _normalize_plan(plan_json: dict, run_id: int, ticket_key: str, repo: Path, g
                 p = dict(a.params)
                 p.setdefault("head", branch_name)
                 p.setdefault("target_branch", default_branch)
-                p["title"] = p["title"] or f"Fix {ticket_key}"
-                p["body"] = p["body"] or plan.narrative or ""
+                p["title"] = p.get("title") or f"Fix {ticket_key}"
+                p["body"] = p.get("body") or plan.narrative or ""
                 if github_repo:
                     p["repo"] = github_repo
                 a.params = p

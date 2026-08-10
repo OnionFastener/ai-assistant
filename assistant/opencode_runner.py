@@ -59,9 +59,11 @@ def extract_text(stdout: str) -> str:
             for part in (evt.get("session") or {}).get("parts", []) or []:
                 _collect(part, candidates)
         elif etype == "message.part.updated":
-            _collect(evt.get("part") or {}, candidates)
+            msg_role = (evt.get("message") or {}).get("role")
+            _collect(evt.get("part") or {}, candidates, msg_role)
         elif etype == "text":
-            _collect(evt.get("part") or {}, candidates)
+            msg_role = (evt.get("message") or {}).get("role")
+            _collect(evt.get("part") or {}, candidates, msg_role)
         elif etype == "message":
             _collect(evt.get("message") or {}, candidates)
     for c in reversed(candidates):
@@ -70,8 +72,8 @@ def extract_text(stdout: str) -> str:
     return ""
 
 
-def _collect(part: dict, out: list[str]) -> None:
-    role = part.get("role")
+def _collect(part: dict, out: list[str], msg_role: str | None = None) -> None:
+    role = part.get("role") or msg_role
     if role and role != "assistant":
         return
     if isinstance(part.get("text"), str) and part["text"].strip():

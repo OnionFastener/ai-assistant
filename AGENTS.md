@@ -26,12 +26,18 @@ export it first or use `set -a; . ./.env; set +a`.
 
 ## Verify / test
 - Syntax gate: `python3 -m compileall -q assistant/`
+- Full mock test suite (no network, no model, ~15s): `python3 -m pytest tests/ -q`.
+  `tests/conftest.py` isolates everything into a session temp dir (workspace, SQLite,
+  a throwaway `paths/` copy and redirected `repo_map`) and backs up/restores the real
+  `config/settings.json` — tests NEVER touch the real `assistant.db`, repo paths, or
+  settings file. Covers: opencode JSON extraction (frozen streams), gitutil patches/
+  apply-verify, executor deterministic handlers incl tampered-patch rejection, triage
+  routing + live-failure escalation, action-agent normalization, API/auth/CSRF, and
+  the full mock E2E (chat + bug-fix sandbox → push → PR, corroborated via `ls-remote`).
 - Read-only live health check: `set -a; . ./.env; set +a; python3 scripts/smoke_live.py`
   (`--write` pushes a branch + opens/closes a PR; `--jira-key KEY` adds then removes a comment)
-- Full mock E2E lives OUTSIDE the repo: `/tmp/opencode-asst/e2e.py` (chat flows + config/paths)
-  and `/tmp/opencode-asst/e2e_v2.py` (bug-fix sandbox → push → PR). Both run headless via
-  FastAPI `TestClient` (no server needed). They remove `paths/copy-request`, `assistant.db`,
-  and `/tmp/assistant/run-*` — re-clean those after running.
+- Legacy scripted E2E (kept out of the repo): `/tmp/opencode-asst/e2e.py` and
+  `/tmp/opencode-asst/e2e_v2.py` are superseded by `tests/test_e2e.py`.
 - The opencode CLI is exercised directly: `opencode run --agent triage --format json --dir <cwd> '<prompt>'`.
 
 ## Architecture map

@@ -1,0 +1,3 @@
+# Dev / test only (not deployed). Install: pip install -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.0

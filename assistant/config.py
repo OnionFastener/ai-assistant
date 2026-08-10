@@ -69,6 +69,7 @@ class Settings:
             s.model_action = data.get("models", {}).get("action", s.model_action)
             s.max_tickets_per_run = int(data.get("run", {}).get("max_tickets_per_run", s.max_tickets_per_run))
         s.settings_path = path
+        s.db_path = Path(os.getenv("ASST_DB_PATH", s.db_path))
         s.workspace = Path(os.getenv("ASST_WORKSPACE", s.workspace))
         s.workspace.mkdir(parents=True, exist_ok=True)
         s.mock = _to_bool(os.getenv("ASST_MOCK", "1" if s.mock else "0"))
