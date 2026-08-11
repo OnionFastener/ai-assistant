@@ -40,10 +40,16 @@ def run_git(repo: Path, *args: str, check: bool = True, strip: bool = True) -> s
     return proc.stdout.strip() if strip else proc.stdout
 
 
+def _strip_git_suffix(name: str) -> str:
+    if name.endswith(".git"):
+        return name[:-4]
+    return name
+
+
 def repo_url(settings, token: str = "", repo: str | None = None) -> str:
     """Clone/push URL for a GitHub repo (defaults to the configured one)."""
     host = getattr(settings, "github_host", "github.com")
-    repo = (repo or settings.github_repo).strip().rstrip(".git")
+    repo = _strip_git_suffix((repo or settings.github_repo).strip())
     token = token or settings.github_token
     if token:
         return f"https://x-access-token:{token}@{host}/{repo}.git"
@@ -153,5 +159,5 @@ def clone_local(remote: Path, dest: Path) -> Path:
 
 def remote_name(repo: str) -> str:
     """Map an 'owner/name' (or bare name) to a safe mock-remote dir name."""
-    name = (repo or "").strip().rstrip(".git").split("/")[-1]
+    name = _strip_git_suffix((repo or "").strip()).split("/")[-1]
     return name or "default"

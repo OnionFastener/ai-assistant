@@ -57,6 +57,7 @@ function navigate() {
     runs: () => renderRuns(app),
     run: () => renderRunDetail(app, param),
     config: () => renderConfig(app),
+    triage: () => renderTriage(app),
     paths: () => renderPaths(app),
   };
   const fn = pages[route] || renderDashboard;
@@ -368,6 +369,84 @@ async function renderConfig(app) {
   } catch (e) { app.innerHTML = `<div class="panel">Error: ${esc(e.message)}</div>`; }
 }
 
+// ---------- triage config ----------
+function joinLines(arr) { return (arr || []).join("\n"); }
+function splitLines(v) { return v.split("\n").map(s => s.trim()).filter(Boolean); }
+async function renderTriage(app) {
+  app.innerHTML = `<h1>Triage instructions</h1><div class="muted">Loading…</div>`;
+  try {
+    const [cfg, action] = await Promise.all([api("/api/triage-config"), api("/api/action-config")]);
+    const cl = cfg.classify || {};
+    app.innerHTML = `<h1>Triage instructions <span class="muted small">← <span class="mono">config/triage.md</span> — used on every run</span></h1>
+      <div class="panel" style="max-width:760px">
+        <p class="small muted">How tickets get classified. Word signals below feed the keyword
+          classifier (mock mode) and are echoed to the triage agent as "classification signals".
+          Per-path criteria live on the <a class="link" href="#/paths">Paths</a> page.</p>
+        <label>Ticket context fields (one per line)</label>
+        <textarea id="tc-fields" rows="5">${esc(joinLines(cfg.context_fields))}</textarea>
+        <label>Bug signals (words that suggest a bug — one per line)</label>
+        <textarea id="tc-bug" rows="5">${esc(joinLines(cl.bug_words))}</textarea>
+        <label>Feature signals (words that suggest a feature request)</label>
+        <textarea id="tc-feature" rows="5">${esc(joinLines(cl.feature_words))}</textarea>
+        <label>Needs-human signals (words that suggest a human decision)</label>
+        <textarea id="tc-decision" rows="4">${esc(joinLines(cl.decision_words))}</textarea>
+        <label>Needs-more-info signals (short or vague tickets)</label>
+        <textarea id="tc-moreinfo" rows="4">${esc(joinLines(cl.more_info_words))}</textarea>
+        <div class="row">
+          <div><label>Issue-type tie-break boosts</label></div>
+          <div><span class="small muted">bug-type boost</span>
+            <input id="tc-boost-bug" type="number" step="0.1" value="${esc(cl.type_boost && cl.type_boost["bug-fix"])}" style="width:80px"></div>
+          <div><span class="small muted">feature-type boost</span>
+            <input id="tc-boost-feature" type="number" step="0.1" value="${esc(cl.type_boost && cl.type_boost["new-feature"])}" style="width:80px"></div>
+        </div>
+        <label>Triage instructions (markdown, sent to the triage agent)</label>
+        <textarea id="tc-instruct" rows="12">${esc(cfg.instruct)}</textarea>
+        <div class="actions">
+          <button id="tc-save">Save triage</button>
+        </div>
+      </div>
+      <div class="panel" style="max-width:760px">
+        <h2>Action agent</h2>
+        <p class="small muted">The system profile the plan-building agent starts with. Per-path
+          behavior (how it handles a bug vs a feature) is edited on the
+          <a class="link" href="#/paths">Paths</a> page —
+          <span class="mono">behavior.md</span> &mdash; and layered on top of this. Stored in
+          <span class="mono">config/action.md</span>.</p>
+        <label>Action-agent instructions (markdown)</label>
+        <textarea id="ac-instruct" rows="12">${esc(action.instruct)}</textarea>
+        <div class="actions">
+          <button id="ac-save">Save action profile</button>
+          <span class="small muted" style="align-self:center">Next run uses it; no restart needed.</span>
+        </div>
+      </div>`;
+    $("#tc-save").addEventListener("click", async () => {
+      const body = {
+        context_fields: splitLines($("#tc-fields").value),
+        classify: {
+          bug_words: splitLines($("#tc-bug").value),
+          feature_words: splitLines($("#tc-feature").value),
+          decision_words: splitLines($("#tc-decision").value),
+          more_info_words: splitLines($("#tc-moreinfo").value),
+          type_boost: {
+            "bug-fix": +$("#tc-boost-bug").value || (cl.type_boost && cl.type_boost["bug-fix"]) || 1.0,
+            "new-feature": +$("#tc-boost-feature").value || (cl.type_boost && cl.type_boost["new-feature"]) || 0.4,
+          },
+        },
+        instruct: $("#tc-instruct").value,
+      };
+      try { await api("/api/triage-config", { method: "PUT", body }); toast("Triage config saved — next run uses it"); renderTriage(app); }
+      catch (e) { toast(e.message); }
+    });
+    $("#ac-save").addEventListener("click", async () => {
+      try {
+        await api("/api/action-config", { method: "PUT", body: { instruct: $("#ac-instruct").value } });
+        toast("Action profile saved — next run uses it"); renderTriage(app);
+      }
+      catch (e) { toast(e.message); }
+    });
+  } catch (e) { app.innerHTML = `<div class="panel">Error: ${esc(e.message)}</div>`; }
+}
+
 // ---------- paths ----------
 async function renderPaths(app) {
   app.innerHTML = `<h1>Paths</h1><div class="muted">Loading…</div>`;
@@ -384,6 +463,8 @@ async function renderPaths(app) {
           <span class="chip">actions: ${esc((p.allowed_actions || []).join(", "))}</span></div>
         <label>instruct.md</label>
         <textarea data-path-instruct="${esc(p.id)}" rows="7">${esc(p.instruct)}</textarea>
+        <label>behavior.md <span class="small muted">(action-agent guidance; blank = reuse instruct.md)</span></label>
+        <textarea data-path-behavior="${esc(p.id)}" rows="5">${esc(p.behavior === p.instruct ? "" : p.behavior)}</textarea>
         <label>schema.json</label>
         <textarea data-path-schema="${esc(p.id)}" rows="5">${esc(JSON.stringify({
           name: p.name, enabled: p.enabled, allowed_actions: p.allowed_actions,
@@ -404,10 +485,11 @@ async function renderPaths(app) {
       const id = b.dataset.pathSave;
       const schema = JSON.parse(b.parentElement.parentElement.querySelector(`[data-path-schema="${id}"]`).value);
       const instruct = b.parentElement.parentElement.querySelector(`[data-path-instruct="${id}"]`).value;
+      const behavior = b.parentElement.parentElement.querySelector(`[data-path-behavior="${id}"]`).value;
       const body = { id, name: schema.name, enabled: schema.enabled ?? true,
         allowed_actions: schema.allowed_actions || [], required_backend: schema.required_backend || null,
         work: schema.work || {}, approval: schema.approval || {}, default_actions: schema.default_actions || [],
-        instruct };
+        instruct, behavior };
       try { await api(`/api/paths/${id}`, { method: "PUT", body }); toast("Path saved — next run uses it"); renderPaths(app); }
       catch (e) { toast(e.message); }
     }));

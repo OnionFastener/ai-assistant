@@ -24,15 +24,18 @@ log = logging.getLogger("assistant.action_agent")
 
 def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: str = "") -> ActionPlanInput:
     """Main entry. Returns a full action plan (mock or real)."""
+    from .action_config import load_action_config
+
     workspace_root = settings.workspace / f"run-{run_id}"
     sandbox = prepare_sandbox(run_id, ticket_key, workspace_root, repo)
-    instructed = (path.instruct or "")[:4000]
+    behavior = (path.behavior or "")[:4000]
     allowed = ", ".join(path.allowed_actions or [])
 
     if settings.mock:
         plan_json = _mock_fix(run_id, ticket_key, ticket_ctx, workspace_root, sandbox)
     else:
-        prompt = _build_prompt(ticket_ctx, instructed, allowed)
+        wrapper = load_action_config().instruct or ""
+        prompt = _build_prompt(ticket_ctx, behavior, allowed, wrapper)
         text = op.run_agent(prompt, agent="action-worker", cwd=str(sandbox),
                             model=settings.model_action)
         plan_json = _parse_json_retry(text, prompt, "action-worker", sandbox)
@@ -59,16 +62,19 @@ def prepare_sandbox(run_id: int, ticket_key: str, workspace_root: Path, repo: st
     return repo_dir
 
 
-def _build_prompt(ticket_ctx: dict, instruct: str, allowed: str) -> str:
+def _build_prompt(ticket_ctx: dict, behavior: str, allowed: str, wrapper: str = "") -> str:
     return (
+        (wrapper + "\n\n" if wrapper else "") +
         "You are routed a Jira ticket for the path whose instructions follow.\n\n"
-        f"PATH INSTRUCTIONS (instruct.md):\n{instruct}\n\n"
+        f"PATH BEHAVIOR (behavior.md / instruct.md):\n{behavior}\n\n"
         f"Your allowed_actions: [{allowed}]\n\n"
         "TICKET CONTEXT (JSON):\n" + json.dumps(ticket_ctx, ensure_ascii=False, default=str) +
         "\n\nYou are in the repository sandbox. REPRODUCE the issue, make the minimal fix, add/"
         "adjust a regression test, and run the relevant tests. Leave your changes in the working "
         "tree (do NOT commit, push, or open a PR — those happen only after human approval).\n\n"
-        "Emit EXACTLY one JSON object, no markdown fences, no prose:\n"
+        "Emit EXACTLY one JSON object, no markdown fences, no prose, no narration, no planning "
+        "commentary. Do a final sentence like 'here is the plan' only if unavoidable — the JSON "
+        "is the LAST text in your response and is parseable on its own:\n"
         '{"summary": string, "narrative": string, "actions": ['
         '{"kind": string, "params": {object}, "preview": string}]}\n'
         "For a bug fix include actions: comment (body), push_branch (base, branch_name like "
@@ -81,22 +87,50 @@ def _parse_json_retry(text: str, prompt: str, agent: str, cwd: Path) -> dict:
     data = _parse_plan_json(text)
     if data is not None:
         return data
-    retry = f"{text}\n\nYour previous output did not parse. Reply with ONLY valid JSON per the contract."
-    text2 = op.run_agent(retry, agent=agent, cwd=str(cwd), model=settings.model_action)
-    data = _parse_plan_json(text2)
-    if data is None:
-        raise ValueError(f"action-agent returned unparsable output: {text[:300]}")
-    return data
+    contract = (
+        'Respond with ONLY ONE JSON object, no markdown fences, no prose, matching the exact '
+        'contract from the original prompt: '
+        '{"summary": string, "narrative": string, "actions": ['
+        '{"kind": string, "params": {object}, "preview": string}]}.'
+    )
+    for _ in range(3):
+        text2 = op.run_agent(f"{contract}\n\n{prompt}", agent=agent, cwd=str(cwd),
+                             model=settings.model_action)
+        data = _parse_plan_json(text2)
+        if data is not None:
+            return data
+    raise ValueError(f"action-agent returned unparsable output: {text[:300]}")
 
 
 def _parse_plan_json(text: str) -> dict | None:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            return json.loads(text[text.find("{"): text.rfind("}") + 1])
-        except (json.JSONDecodeError, ValueError):
-            return None
+    if not text:
+        return None
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start:end + 1])
+        candidates.append(text[start:])
+    fallback: dict | None = None
+    for cand in candidates:
+        for cleaned in _json_variants(cand):
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                if "actions" in data:
+                    return data
+                fallback = fallback or data
+    return fallback
+
+
+def _json_variants(text: str) -> list[str]:
+    variants = [text]
+    for pat in ("```json", "```"):
+        if pat in text:
+            variants.append(text.split(pat, 1)[1].split("```", 1)[0])
+    return variants
 
 
 def _normalize_plan(plan_json: dict, run_id: int, ticket_key: str, repo: Path, github_repo: str = "") -> ActionPlanInput:

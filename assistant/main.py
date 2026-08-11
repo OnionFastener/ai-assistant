@@ -21,6 +21,8 @@ from .db import SessionLocal, get_session, init_db
 from .models import Action, ActionPlan, Run, Ticket
 from .paths import VALID_ACTIONS, get_path, load_paths
 from .schemas import (ConfigIn, EditPlanIn, LoginIn, ManualRunIn, PathIn)
+from .triage_config import load_triage_config, save_triage_config
+from .action_config import load_action_config, save_action_config
 
 log = logging.getLogger("assistant")
 
@@ -366,6 +368,12 @@ def put_path(path_id: str, payload: PathIn):
     (folder / "schema.json").write_text(json.dumps(schema, indent=2))
     if payload.instruct:
         (folder / "instruct.md").write_text(payload.instruct)
+    if payload.behavior is not None:
+        bf = folder / "behavior.md"
+        if payload.behavior.strip():
+            bf.write_text(payload.behavior)
+        elif bf.exists():
+            bf.unlink()
     return list_paths_fn()
 
 
@@ -392,6 +400,47 @@ def create_path(payload: PathIn):
 
 def list_paths_fn():
     return [p.to_dict() for p in load_paths(settings.paths_dir)]
+
+
+# ---------- triage config ----------
+
+@app.get("/api/triage-config")
+def get_triage_config(request: Request):
+    _require_user(request)
+    return load_triage_config().to_dict()
+
+
+@app.put("/api/triage-config", dependencies=[_require_mutation])
+def put_triage_config(payload: dict):
+    fields = [str(f).strip() for f in (payload.get("context_fields") or []) if str(f).strip()]
+    instruct = str(payload.get("instruct") or "").strip()
+    cfg = load_triage_config()
+    if fields:
+        cfg.context_fields = fields
+    classify = payload.get("classify")
+    if isinstance(classify, dict) and classify:
+        merged = {**cfg.classify, **{str(k): v for k, v in classify.items()}}
+        if isinstance(merged.get("type_boost"), dict):
+            merged["type_boost"] = {**(cfg.classify.get("type_boost") or {}),
+                                    **merged["type_boost"]}
+        cfg.classify = merged
+    cfg.instruct = instruct
+    save_triage_config(cfg)
+    return cfg.to_dict()
+
+
+@app.get("/api/action-config")
+def get_action_config(request: Request):
+    _require_user(request)
+    return load_action_config().to_dict()
+
+
+@app.put("/api/action-config", dependencies=[_require_mutation])
+def put_action_config(payload: dict):
+    cfg = load_action_config()
+    cfg.instruct = str(payload.get("instruct") or "").strip()
+    save_action_config(cfg)
+    return cfg.to_dict()
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

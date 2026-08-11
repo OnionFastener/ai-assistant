@@ -1,11 +1,36 @@
 {
   "name": "New Feature",
   "enabled": true,
-  "allowed_actions": ["comment", "transition", "assign"],
-  "required_backend": null,
-  "approval": { "editable": ["comment", "assignee"] },
+  "allowed_actions": [
+    "comment",
+    "transition",
+    "assign",
+    "push_branch",
+    "create_pr"
+  ],
+  "required_backend": "github",
+  "work": {
+    "clone": true
+  },
+  "approval": {
+    "require_pr_diff": true,
+    "editable": [
+      "comment",
+      "assignee"
+    ]
+  },
   "default_actions": [
-    { "kind": "comment", "params": { "body": "" } },
-    { "kind": "assign", "params": { "assignee": "me" } }
+    {
+      "kind": "comment",
+      "params": {
+        "body": ""
+      }
+    },
+    {
+      "kind": "transition",
+      "params": {
+        "to": "In Review"
+      }
+    }
   ]
 }

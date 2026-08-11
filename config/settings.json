@@ -3,6 +3,10 @@
     {
       "name": "OWEN unresolved unassigned",
       "jql": "project = OWEN AND resolution = Unresolved ORDER BY created ASC"
+    },
+    {
+      "name": "AA ai-assistant unresolved",
+      "jql": "project = AA AND resolution = Unresolved ORDER BY created ASC"
     }
   ],
   "schedule": {
@@ -22,7 +26,9 @@
       "OnionFastener/onionfastener.github.io",
       "OnionFastener/wordle-clone"
     ],
-    "project_repo_map": {},
+    "project_repo_map": {
+      "AA": "OnionFastener/ai-assistant"
+    },
     "host": "github.com",
     "ssh_url": ""
   },

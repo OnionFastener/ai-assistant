@@ -25,6 +25,7 @@ class TriagePath:
     approval: dict = field(default_factory=dict)
     default_actions: list[dict] = field(default_factory=list)
     instruct: str = ""
+    behavior: str = ""
     schema: dict = field(default_factory=dict)
     valid: bool = True
     error: str = ""
@@ -40,6 +41,7 @@ class TriagePath:
             "approval": self.approval,
             "default_actions": self.default_actions,
             "instruct": self.instruct,
+            "behavior": self.behavior,
             "valid": self.valid,
             "error": self.error,
         }
@@ -60,6 +62,11 @@ def _load_one(folder: Path) -> TriagePath:
     try:
         schema = json.loads((folder / "schema.json").read_text()) if (folder / "schema.json").exists() else {}
         instruct = (folder / "instruct.md").read_text() if (folder / "instruct.md").exists() else ""
+        behavior_file = folder / "behavior.md"
+        if behavior_file.exists():
+            behavior = behavior_file.read_text().strip() or instruct
+        else:
+            behavior = instruct
         errors = _validate(path_id, schema)
         if errors:
             return TriagePath(id=path_id, name=path_id, valid=False, error="; ".join(errors))
@@ -74,6 +81,7 @@ def _load_one(folder: Path) -> TriagePath:
             approval=schema.get("approval", {}) or {},
             default_actions=schema.get("default_actions", []) or [],
             instruct=instruct,
+            behavior=behavior,
             schema=schema,
         )
     except Exception as e:  # noqa: BLE001

@@ -33,6 +33,23 @@ def test_remote_name():
     assert gitutil.remote_name("") == "default"
 
 
+def test_remote_name_keeps_normal_tail_characters():
+    """Regression: .rstrip('.git') used to strip any trailing g/i/t char,
+    mangling 'ai-assistant' → 'ai-assistan'."""
+    assert gitutil.remote_name("OnionFastener/ai-assistant") == "ai-assistant"
+    assert gitutil.remote_name("OnionFastener/ai-assistant.git") == "ai-assistant"
+    assert gitutil.remote_name("owner/repo-with-t") == "repo-with-t"
+
+
+def test_repo_url_preserves_repo_slug():
+    from types import SimpleNamespace
+
+    s = SimpleNamespace(github_host="github.com", github_repo="OnionFastener/ai-assistant",
+                        github_token="", github_ssh_url="")
+    assert gitutil.repo_url(s, repo="OnionFastener/ai-assistant").endswith("OnionFastener/ai-assistant.git")
+    assert gitutil.repo_url(s, repo="OnionFastener/ai-assistant.git").endswith("OnionFastener/ai-assistant.git")
+
+
 def test_clone_local_and_default_branch(mock_remote, tmp_path):
     dest = tmp_path / "clone"
     gitutil.clone_local(mock_remote, dest)

@@ -130,6 +130,16 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
         except Exception as e:  # noqa: BLE001
             _log(db, run_id, f"{row.key}: devinfo failed: {e}", level="warn", key=row.key)
         try:
+            comments = jira.get_comments(row.key)
+            if comments:
+                section = "\n\n## Comments\n" + "\n\n".join(
+                    f"({c.get('created', '')} {c.get('author', '')}): {c.get('body', '')}"
+                    for c in comments
+                )
+                row.description = (row.description + section).strip()
+        except Exception as e:  # noqa: BLE001
+            _log(db, run_id, f"{row.key}: comments failed: {e}", level="warn", key=row.key)
+        try:
             links += search_context(settings, row.key)
         except Exception as e:  # noqa: BLE001
             _log(db, run_id, f"{row.key}: github context failed: {e}", level="warn", key=row.key)
@@ -150,19 +160,24 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
         )
     db.commit()
 
+    # --- triage config: user-editable global instructions/context fields ---
+    from .triage_config import load_triage_config
+
+    triage_cfg = load_triage_config()
+
     # --- triage each ticket + build a plan ---
     partial = False
     for row in tickets:
         try:
-            ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links])
-            result = run_triage(settings, settings.workspace / f"run-{run_id}", ctx, paths)
+            ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
+            result = run_triage(settings, settings.workspace / f"run-{run_id}", ctx, paths, triage_cfg)
             row.stage = "triaged"
             row.triage_path_id = result.path_id
             row.triage_reason = result.reason
             row.triage_confidence = result.confidence
             row.need_my_input = result.need_my_input
             db.commit()
-            _make_plan(db, run_id, row, result, paths)
+            _make_plan(db, run_id, row, result, paths, triage_cfg)
         except Exception as e:  # noqa: BLE001
             row.stage = "failed"
             row.error = str(e)
@@ -176,11 +191,11 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
     _log(db, run_id, f"finished ({run.status})")
 
 
-def _make_plan(db, run_id: int, row: Ticket, result, paths) -> None:
+def _make_plan(db, run_id: int, row: Ticket, result, paths, triage_cfg=None) -> None:
     _supersede_prior_pending(db, row.key)
     path = get_path(paths, result.path_id)
     if path and path.required_backend == "github":
-        _make_code_plan(db, run_id, row, result, path)
+        _make_code_plan(db, run_id, row, result, path, triage_cfg)
     else:
         _make_chat_plan(db, run_id, row, result, path)
 
@@ -200,11 +215,11 @@ def _supersede_prior_pending(db, ticket_key: str) -> None:
         db.commit()
 
 
-def _make_code_plan(db, run_id: int, row: Ticket, result, path) -> None:
+def _make_code_plan(db, run_id: int, row: Ticket, result, path, triage_cfg=None) -> None:
     """Code path: action agent works in a sandbox clone, patch is captured for review."""
     from .action_agent import run_for_ticket
 
-    ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links])
+    ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
     plan_input = run_for_ticket(run_id, row.key, ctx, path, repo=row.repo)
     plan = ActionPlan(ticket_id=row.id, run_id=run_id, path_id=result.path_id,
                       summary=plan_input.summary or row.summary, narrative=plan_input.narrative)

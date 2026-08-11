@@ -101,6 +101,28 @@ class JiraClient:
         dv = data.get("fields", {}).get(devinfo_field)
         return _parse_devinfo(dv) if dv else []
 
+    def get_comments(self, key: str, max_results: int = 50) -> list[dict]:
+        """Recent issue comments flattened to text (paged so nothing is truncated)."""
+        out: list[dict] = []
+        start = 0
+        while True:
+            data = self._get(f"/rest/api/3/issue/{key}/comment",
+                             params={"startAt": start, "maxResults": max_results, "orderBy": "created"})
+            comments = data.get("comments", [])
+            for c in comments:
+                body = c.get("body")
+                out.append({
+                    "id": c.get("id", ""),
+                    "author": (c.get("author") or {}).get("displayName", ""),
+                    "created": c.get("created", ""),
+                    "body": _adf_to_text(body) if isinstance(body, dict) else str(body or ""),
+                })
+            total = int(data.get("total", 0))
+            start += len(comments)
+            if not comments or start >= total:
+                break
+        return out
+
     # ---- write side (called only by the deterministic executor) ----
 
     def add_comment(self, key: str, body: str) -> str:
@@ -154,6 +176,9 @@ class MockJiraClient:
     def get_devinfo(self, key: str, devinfo_field: str = "") -> list[dict]:
         return []
 
+    def get_comments(self, key: str, max_results: int = 50) -> list[dict]:
+        return []
+
     def add_comment(self, key: str, body: str) -> str:
         self.comments.append((key, body))
         return f"cmt-{len(self.comments)}"
@@ -181,28 +206,109 @@ def build_jira(settings) -> JiraClient | MockJiraClient:
 # ---- helpers ----
 
 def _clean(desc) -> str:
-    """Flatten Jira ADF/string content into plain text for context/triage."""
+    """Flatten Jira ADF content into plain text. String descriptions pass through;
+    embedded objects (smart-link cards, mentions, media, tables) keep their URLs/text."""
     if isinstance(desc, str):
         return desc
     if not isinstance(desc, dict) or desc.get("type") != "doc":
         return ""
-    out: list[str] = []
+    return _flatten(desc)
 
-    def walk(node):
-        if node.get("type") == "text":
-            out.append(node.get("text", ""))
-        elif node.get("type") == "hardBreak":
-            out.append("\n")
-        elif node.get("type") == "inlineCard" or node.get("content") is None:
-            return
-        for child in node.get("content", []) or []:
-            walk(child)
+
+def _node_text(node: dict | None) -> str:
+    """Best-effort display text for a leaf node (smart-link URL, mention, media, …)."""
+    if not isinstance(node, dict):
+        return ""
+    t = node.get("type")
+    if t == "text":
+        return node.get("text", "")
+    attrs = node.get("attrs") or {}
+    if t in ("inlineCard", "blockCard", "embedCard"):
+        return attrs.get("url", "")
+    if t in ("media", "mediaSingle", "mediaGroup"):
+        return attrs.get("url", "") or attrs.get("alt", "")
+    if t == "mention":
+        return attrs.get("text", "") or attrs.get("id", "")
+    if t == "emoji":
+        return attrs.get("shortName", "")
+    if t in ("status", "date", "label"):
+        return attrs.get("text", "") or attrs.get("shortName", "") or attrs.get("value", "")
+    if t in ("rule", "hardBreak"):
+        return "\n"
+    return ""
+
+
+def _flatten(adf: dict) -> str:
+    """Robust ADF → text: block-aware, preserves embedded objects and URLs."""
+    lines: list[str] = []
+
+    def walk_block(node: dict):
         t = node.get("type")
-        if t in ("paragraph", "listItem", "heading", "codeBlock") and out and not out[-1].endswith("\n"):
-            out.append("\n")
+        if t == "text":
+            return [node.get("text", "")]
+        if t == "hardBreak":
+            return ["\n"]
+        if t in ("inlineCard", "blockCard", "embedCard", "media", "mention", "emoji",
+                 "status", "date", "label", "rule"):
+            text = _node_text(node)
+            return [text] if text else []
+        if t in ("paragraph", "blockquote", "panel"):
+            return [_join_inline(node.get("content", []) or [])]
+        if t == "heading":
+            text = _join_inline(node.get("content", []) or [])
+            return [f"## {text.strip()}"]
+        if t == "bulletList":
+            out: list[str] = []
+            for item in node.get("content", []) or []:
+                seg = " ".join(s for s in walk_block(item) if s != "\n")
+                out.append(f"- {seg.strip()}")
+            return out
+        if t == "orderedList":
+            numbered: list[str] = []
+            for i, item in enumerate(node.get("content", []) or [], 1):
+                seg = " ".join(s for s in walk_block(item) if s != "\n")
+                numbered.append(f"{i}. {seg.strip()}")
+            return numbered
+        if t == "listItem":
+            segs: list[str] = []
+            for child in node.get("content", []) or []:
+                segs.extend(walk_block(child))
+            return segs
+        if t == "table":
+            rows: list[str] = []
+            for row in node.get("content", []) or []:
+                cells = []
+                for cell in row.get("content", []) or []:
+                    seg = " ".join(s for s in walk_block(cell) if s != "\n").strip()
+                    cells.append(seg)
+                rows.append(" | ".join(c for c in cells if c))
+            return rows
+        if t in ("tableRow", "tableCell", "tableHeader"):
+            segs: list[str] = []
+            for child in node.get("content", []) or []:
+                segs.extend(walk_block(child))
+            return segs
+        if t == "codeBlock":
+            return [_join_inline(node.get("content", []) or [])]
+        # generic container
+        segs: list[str] = []
+        for child in node.get("content", []) or []:
+            segs.extend(walk_block(child))
+        return segs
 
-    walk(desc)
-    return "".join(out).strip()
+    def _join_inline(children: list) -> str:
+        out_parts: list[str] = []
+        for child in children:
+            for s in walk_block(child):
+                out_parts.append(s)
+        return "".join(out_parts)
+
+    for block in adf.get("content", []) or []:
+        for seg in walk_block(block):
+            seg = seg.strip()
+            if seg:
+                lines.append(seg)
+    return "\n".join(lines)
 
 
 def _to_adf(text: str) -> dict:
@@ -236,40 +342,8 @@ def _plain_string(v) -> str:
 
 
 def _adf_to_text(adf: dict) -> str:
-    """Convert the Jira ADF document to plain text (newlines preserved)."""
-    buf: list[str] = []
-
-    def walk(node):
-        t = node.get("type")
-        if t == "text":
-            buf.append(node.get("text", ""))
-        elif t == "hardBreak":
-            buf.append("\n")
-        elif t in ("paragraph", "heading", "codeBlock", "blockquote", "listItem"):
-            if t == "heading":
-                buf.append("\n## ")
-            elif t in ("paragraph", "blockquote"):
-                if buf and buf[-1] and not buf[-1].endswith("\n"):
-                    buf.append("\n")
-                buf.append("\n")
-            for c in node.get("content", []):
-                walk(c)
-            if t in ("heading", "codeBlock", "listItem"):
-                buf.append("\n")
-        elif t == "bulletList":
-            for c in node.get("content", []):
-                buf.append("- ")
-                walk(c)
-        elif t == "orderedList":
-            for i, c in enumerate(node.get("content", []), 1):
-                buf.append(f"{i}. ")
-                walk(c)
-        elif "content" in node:
-            for c in node.get("content", []):
-                walk(c)
-
-    walk(adf)
-    return "".join(buf).strip()
+    """Convert a Jira ADF document to plain text (newlines preserved)."""
+    return _flatten(adf)
 
 
 def _parse_devinfo(dv) -> list[dict]:

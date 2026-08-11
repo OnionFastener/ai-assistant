@@ -62,6 +62,7 @@ class PathIn(BaseModel):
     approval: dict = Field(default_factory=dict)
     default_actions: list[dict] = Field(default_factory=list)
     instruct: str | None = None
+    behavior: str | None = None
 
 class ApproveResult(BaseModel):
     ok: bool

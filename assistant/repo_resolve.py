@@ -30,7 +30,7 @@ def repo_from_ticket_text(parts: list[str]) -> str:
             if owner in _CONFUSING or name in _CONFUSING:
                 continue
             name = name[:-4] if name.endswith(".git") else name
-            repo = f"{owner}/{name.rstrip('.')}"
+            repo = f"{owner}/{name}"
             return repo
     return ""
 

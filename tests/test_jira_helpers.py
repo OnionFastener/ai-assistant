@@ -44,6 +44,59 @@ def test_clean_handles_hardbreak():
     assert _clean(adf) == "line1\nline2"
 
 
+def test_clean_preserves_smartlink_url():
+    adf = {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "project repo is "},
+            {"type": "inlineCard", "attrs": {"url": "https://github.com/OnionFastener/ai-assistant"}},
+        ]},
+    ]}
+    out = _clean(adf)
+    assert "https://github.com/OnionFastener/ai-assistant" in out
+
+
+def test_clean_flattens_mention_media_and_tables():
+    adf = {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [
+            {"type": "mention", "attrs": {"text": "@owen", "id": "abc"}},
+            {"type": "text", "text": " see "},
+            {"type": "inlineCard", "attrs": {"url": "https://example.com/item"}},
+        ]},
+        {"type": "bulletList", "content": [
+            {"type": "listItem", "content": [{"type": "text", "text": "one"}]},
+            {"type": "listItem", "content": [{"type": "text", "text": "two"}]},
+        ]},
+        {"type": "table", "content": [
+            {"type": "tableRow", "content": [
+                {"type": "tableHeader", "content": [{"type": "text", "text": "a"}]},
+                {"type": "tableHeader", "content": [{"type": "text", "text": "b"}]},
+            ]},
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "text", "text": "1"}]},
+                {"type": "tableCell", "content": [{"type": "text", "text": "2"}]},
+            ]},
+        ]},
+    ]}
+    out = _clean(adf)
+    assert "@owen" in out
+    assert "https://example.com/item" in out
+    assert "- one" in out and "- two" in out
+    assert "a | b" in out and "1 | 2" in out
+
+
+def test_clean_keeps_contentless_nodes_from_dropping_siblings():
+    adf = {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            {"type": "emoji", "attrs": {"shortName": ":smile:"}},
+            {"type": "text", "text": "after"},
+        ]},
+    ]}
+    out = _clean(adf)
+    assert "before" in out and "after" in out
+    assert ":smile:" in out
+
+
 def test_to_adf_produces_doc_with_paragraphs():
     a = _to_adf("hello world")
     assert a["type"] == "doc"
@@ -73,7 +126,7 @@ def test_to_adf_empty_gives_empty_paragraph():
 
 def test_adf_round_trip_text():
     body = "Root cause: **bad math**\n\nExpected subtotal."
-    assert _adf_to_text(_to_adf(body)).replace("\n\n", " ") in ("Root cause: bad math Expected subtotal.",)
+    assert _adf_to_text(_to_adf(body)).replace("\n", " ") in ("Root cause: bad math Expected subtotal.",)
 
 
 def test_mock_jira_records_writes():
@@ -100,6 +153,11 @@ def test_mock_jira_search_returns_default_tickets():
     assert [t["key"] for t in out] == ["DEMO-1", "DEMO-2", "DEMO-3", "DEMO-4", "DEMO-5"]
     assert out[0]["project"] == "DEMO"
     assert out[0]["summary"] == "Order total crashes to $0 for free-shipping orders"
+
+
+def test_mock_jira_comments_empty():
+    m = MockJiraClient()
+    assert m.get_comments("DEMO-1") == []
 
 
 def test_parse_devinfo():

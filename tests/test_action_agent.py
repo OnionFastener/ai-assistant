@@ -25,6 +25,19 @@ def test_parse_plan_json_extracts_from_prose():
     assert _parse_plan_json('Here: {"summary": "s"} ok') == {"summary": "s"}
 
 
+def test_parse_plan_json_extracts_action_plan_from_long_prose():
+    """Regression: model narrated (the AA-2 failure) but embedded a JSON plan at the end."""
+    prose = (
+        "Chrome is available. Let me empirically verify how `zoom: 1.25` behaves "
+        "for a full-width card so I pick a correct implementation. "
+        'Final plan: ```json\n{"summary": "Fix zoom", "narrative": "why", '
+        '"actions": [{"kind": "comment", "params": {"body": "hi"}, "preview": ""}]}\n```'
+    )
+    out = _parse_plan_json(prose)
+    assert out and "actions" in out
+    assert out["summary"] == "Fix zoom"
+
+
 def test_parse_plan_json_invalid_returns_none():
     assert _parse_plan_json("not json") is None
     assert _parse_plan_json("") is None
