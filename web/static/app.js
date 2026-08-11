@@ -192,7 +192,7 @@ function planCard(it) {
       </tr>`;
   }).join("");
   return `
-  <div class="card" data-plan-card="${p.id}">
+  <div class="card approval-card" data-plan-card="${p.id}">
     <div class="head">
       <h3>${esc(t.key)} · ${esc(t.summary)}</h3>
       <span class="chip">${esc(p.path_id)}</span>

@@ -62,6 +62,7 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px
 .row { display: flex; gap: 10px; flex-wrap: wrap; } 
 .row > div { flex: 1; min-width: 160px; }
 .card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; background: var(--panel); }
+.card.approval-card { padding: calc(14px * 1.25); }
 .card .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .card .head h3 { margin: 0; font-size: 15px; }
 .card .summary { margin-top: 8px; }
