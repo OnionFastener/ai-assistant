@@ -10,7 +10,7 @@ def test_login_wrong_password(client):
 
 
 def test_login_sets_session_cookie_and_csrf(client):
-    r = client.post("/api/login", json={"password": "change-me"})
+    r = client.post("/api/login", json={"password": "mock-assistant"})
     assert r.status_code == 200
     assert "asst_session" in r.cookies
     assert r.json()["csrf"]

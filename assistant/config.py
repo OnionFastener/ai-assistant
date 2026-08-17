@@ -81,7 +81,7 @@ class Settings:
         s.workspace = Path(os.getenv("ASST_WORKSPACE", s.workspace))
         s.workspace.mkdir(parents=True, exist_ok=True)
         s.mock = _to_bool(os.getenv("ASST_MOCK", "1" if s.mock else "0"))
-        s.admin_password = os.getenv("ASST_ADMIN_PASSWORD", s.admin_password)
+        s.admin_password = os.getenv("ASST_ADMIN_PASSWORD", "mock-assistant" if s.mock else s.admin_password)
         s.jira_base_url = os.getenv("ASST_JIRA_BASE_URL", s.jira_base_url).rstrip("/")
         s.jira_email = os.getenv("ASST_JIRA_EMAIL", s.jira_email)
         s.jira_api_token = os.getenv("ASST_JIRA_API_TOKEN", "")

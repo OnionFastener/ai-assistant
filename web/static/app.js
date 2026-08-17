@@ -92,7 +92,7 @@ function renderLogin(app) {
         <label for="pw">Password</label>
         <input id="pw" type="password" autocomplete="current-password">
         <div class="actions"><button id="go">Sign in</button></div>
-        <p class="small muted">Set <span class="mono">ASST_ADMIN_PASSWORD</span> in <span class="mono">.env</span>.</p>
+        <p class="small muted">For demo, enter <span class="mono">mock-assistant</span>. Live mode uses <span class="mono">ASST_ADMIN_PASSWORD</span> from <span class="mono">.env</span>.</p>
       </div>
     </div>`;
   const doLogin = async () => {
@@ -103,7 +103,6 @@ function renderLogin(app) {
       location.hash = "#/dashboard";
     } catch (e) { toast(e.message); }
   };
-  $("#go").addEventListener("click", doLogin);
   $("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
   $("#pw").focus();
 }

@@ -91,7 +91,7 @@ def client():
 
 @pytest.fixture()
 def authed(client):
-    r = client.post("/api/login", json={"password": "change-me"})
+    r = client.post("/api/login", json={"password": "mock-assistant"})
     assert r.status_code == 200, r.text
     return {"client": client, "csrf": r.json()["csrf"]}
 
