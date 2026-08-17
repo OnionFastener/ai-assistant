@@ -1,0 +1,20 @@
+services:
+  assistant:
+    build: .
+    container_name: ai-assistant
+    restart: unless-stopped
+
+    ports:
+      - "8010:8010"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./config:/app/config
+      - assistant-workspace:/tmp/assistant
+      - assistant-db:/app/data
+
+volumes:
+  assistant-workspace:
+  assistant-db:

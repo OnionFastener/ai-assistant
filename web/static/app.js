@@ -24,7 +24,10 @@ async function api(path, { method = "GET", body } = {}) {
   } else if (method !== "GET") {
     opts.headers["X-CSRF"] = state.csrf || "";
   }
-  const res = await fetch(path, opts);
+  const url = path.startsWith("/api/")
+  ? "/project2" + path
+  : path;
+  const res = await fetch(url, opts);
   if (res.status === 401) { setChrome(false); location.hash = "#/login"; throw new Error("Not authenticated"); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || res.statusText);

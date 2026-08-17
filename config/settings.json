@@ -11,12 +11,12 @@
   ],
   "sources": {
     "jira": {
-      "enabled": false
+      "enabled": true
     },
     "github_issues": {
       "enabled": true,
       "repos": [
-        "usestrix/strix"
+        "demo/mock-repo"
       ]
     }
   },
@@ -26,17 +26,16 @@
     "minute": 0
   },
   "jira": {
-    "base_url": "https://seeksong.atlassian.net",
-    "email": "owensong.ca@gmail.com",
+    "base_url": "",
+    "email": "",
     "account_id": "",
     "devinfo_field": ""
   },
   "github": {
-    "repo": "OnionFastener/onionfastener.github.io",
+    "repo": "owner/repo-a",
     "repos": [
-      "OnionFastener/onionfastener.github.io",
-      "OnionFastener/wordle-clone",
-      "OnionFastener/ai-assistant"
+      "owner/repo-a",
+      "owner/repo-b"
     ],
     "project_repo_map": {
       "AA": "OnionFastener/ai-assistant"

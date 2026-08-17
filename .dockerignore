@@ -1,0 +1,13 @@
+.venv
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+.pytest_cache
+.vscode
+tests
+img
+README.md
+DESIGN.md
+AGENTS.md
