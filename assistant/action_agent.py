@@ -6,6 +6,7 @@ exact approved patch later. Mock mode simulates an agent fix so the whole sandbo
 diff + push flow runs with no model.
 """
 from __future__ import annotations
+import re
 
 import json
 import logging
@@ -145,6 +146,8 @@ def _normalize_plan(plan_json: dict, run_id: int, ticket_key: str, repo: Path, g
             default_branch = gitutil.default_branch(settings, repo)
         except Exception:  # noqa: BLE001
             pass
+    if ticket_key.startswith("GH:"):
+        plan.actions = [a for a in plan.actions if a.kind not in ("transition", "assign")]
 
     has_code = any(a.kind in ("push_branch", "create_pr") for a in plan.actions)
     if has_code:
@@ -178,10 +181,15 @@ def _normalize_plan(plan_json: dict, run_id: int, ticket_key: str, repo: Path, g
 
 
 def _ensure_branch_name(plan: ActionPlanInput, run_id: int, ticket_key: str) -> str:
-    for a in plan.actions:
-        if a.kind == "push_branch" and a.params.get("branch_name"):
-            return a.params["branch_name"]
-    return f"fix/{ticket_key.lower()}-{run_id}"
+    if not ticket_key.startswith("GH:"):
+        for action in plan.actions:
+            if action.kind == "push_branch" and action.params.get("branch_name"):
+                return action.params["branch_name"]
+    return f"fix/{_branch_slug(ticket_key)}-{run_id}"
+
+
+def _branch_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9._-]+", "-", value.lower()).strip(".-") or "ticket"
 
 
 def _mock_fix(run_id: int, ticket_key: str, ticket_ctx: dict, workspace: Path, repo: Path) -> dict:

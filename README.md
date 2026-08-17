@@ -1,23 +1,32 @@
 # AI Assistant
 
-Personal, single-user assistant that **nightly scans Jira tickets, AI-triages them
-into configurable paths, drafts an Action Plan per ticket, waits for human approval
-in a web console, then deterministically executes the approved actions** against
-Jira and GitHub.
+Personal, single-user assistant that scans selected work sources, AI-triages each item
+into configurable paths, drafts an Action Plan, waits for human approval in a web console,
+and deterministically executes approved actions.
+
+It supports Jira tickets and public GitHub Issues as independent, selectable inbound sources.
 
 ## How it works
 
-1. **Scan** — runs configured JQL queries on a schedule (or on demand from the UI).
-2. **Triage** — each unresolved ticket is fed to an opencode agent (`triage`), which
-   reads the ticket and routes it into one of the configurable *paths*
-   (`bug-fix`, `new-feature`, `need-more-info`, …), each with its own `instruct.md`
-   + `allowed_actions` whitelist.
-3. **Plan** — for code paths, an action agent clones the resolved repo into a sandbox,
-   makes the fix (`git diff` captured as the plan's patch), and drafts an Action Plan.
-4. **Approve** — you review plans in the web console and approve or reject.
-5. **Execute** — the executor runs the approved actions deterministically
-   (never calls a model): Jira comment/transition, GitHub branch + PR, etc.
-   The patch hash is re-verified before it's applied.
+1. **Select sources** — in **Config**, enable Jira, public GitHub Issues, or both. GitHub
+   Issue repositories are configured separately from repositories used for code context and PRs.
+2. **Scan** — runs configured JQL queries and/or scans open issues in the selected public
+   GitHub repositories, on a schedule or on demand.
+3. **Triage** — every inbound item follows the same opencode triage paths (`bug-fix`,
+   `new-feature`, `need-more-info`, …), each with its own instructions and action allowlist.
+4. **Plan** — for code paths, an action agent clones the linked repository into a sandbox,
+   captures its proposed patch, and drafts a reviewable Action Plan.
+5. **Approve and execute** — approved actions run deterministically. GitHub-origin items
+   comment on GitHub when approved; Jira-only assignment and transition actions are blocked
+   for GitHub Issues. Patch hashes are re-verified before application.
+
+## Source configuration
+
+Use the Config page to toggle **Scan Jira issues** and **Scan public GitHub Issues**. Enter
+one public GitHub repository (`owner/name`) per line for GitHub Issue scanning. In live mode,
+`ASST_GITHUB_TOKEN` raises the GitHub API rate limit; it needs public repository read access
+for scanning. Environment equivalents are `ASST_SCAN_JIRA`, `ASST_SCAN_GITHUB_ISSUES`, and
+`ASST_GITHUB_ISSUE_REPOS` (comma-separated).
 
 ## Screenshots
 
@@ -33,12 +42,13 @@ python3 -m uvicorn assistant.main:app --port 8010
 ```
 
 Open http://127.0.0.1:8010 — login with the password in `config/settings.json` / `.env`.
-Mock mode ships 5 DEMO tickets plus a real local bare-git remote, so clone → patch →
-push → PR workflows run with no network access.
+Mock mode ships the Jira demo tickets, a mock public GitHub Issue when that source is enabled,
+and local bare-git remotes so clone → patch → push → PR workflows run without network access.
 
-**Live mode:** `ASST_MOCK=0` plus real creds in `.env` (Jira base/email/api-token,
-`ASST_GITHUB_REPOS` + `ASST_GITHUB_TOKEN`). The app does **not** auto-load `.env` —
-export it first, e.g. `set -a; . ./.env; set +a`.
+**Live mode:** set `ASST_MOCK=0` and provide credentials only for enabled sources. Jira needs
+its base URL, email, and API token; GitHub Issue scanning needs `ASST_GITHUB_TOKEN` for practical
+rate limits. GitHub code actions and PRs also use `ASST_GITHUB_REPOS` and `ASST_GITHUB_TOKEN`.
+The app does **not** auto-load `.env`; export it first, e.g. `set -a; . ./.env; set +a`.
 
 ## Verify / test
 

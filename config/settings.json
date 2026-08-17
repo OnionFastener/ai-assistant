@@ -9,6 +9,17 @@
       "jql": "project = AA AND resolution = Unresolved ORDER BY created ASC"
     }
   ],
+  "sources": {
+    "jira": {
+      "enabled": false
+    },
+    "github_issues": {
+      "enabled": true,
+      "repos": [
+        "usestrix/strix"
+      ]
+    }
+  },
   "schedule": {
     "enabled": false,
     "hour": 2,
@@ -24,7 +35,8 @@
     "repo": "OnionFastener/onionfastener.github.io",
     "repos": [
       "OnionFastener/onionfastener.github.io",
-      "OnionFastener/wordle-clone"
+      "OnionFastener/wordle-clone",
+      "OnionFastener/ai-assistant"
     ],
     "project_repo_map": {
       "AA": "OnionFastener/ai-assistant"
@@ -37,6 +49,6 @@
     "action": ""
   },
   "run": {
-    "max_tickets_per_run": 50
+    "max_tickets_per_run": 5
   }
 }

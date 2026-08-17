@@ -38,6 +38,7 @@ class LoginIn(BaseModel):
 
 class ManualRunIn(BaseModel):
     jql: str | None = None
+    sources: list[Literal["jira", "github"]] | None = None
 
 class EditPlanIn(BaseModel):
     summary: str | None = None
@@ -45,6 +46,7 @@ class EditPlanIn(BaseModel):
     actions: list[ActionProposal] | None = None
 
 class ConfigIn(BaseModel):
+    sources: dict = Field(default_factory=dict)
     jql_queries: list[dict] = Field(default_factory=list)
     schedule: dict = Field(default_factory=dict)
     jira: dict = Field(default_factory=dict)

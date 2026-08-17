@@ -59,6 +59,21 @@ class GitHubClient:
             })
         return out
 
+    def open_issues(self, limit: int = 50) -> list[dict]:
+        data = self._get(f"/repos/{self.repo}/issues", {"state": "open", "sort": "updated", "direction": "desc", "per_page": min(limit, 100)})
+        out = []
+        for item in data:
+            if "pull_request" in item:
+                continue
+            out.append({"key": f"GH:{self.repo}#{item.get('number')}", "project": self.repo, "repo": self.repo, "summary": item.get("title", ""), "description": item.get("body") or "", "issue_type": "GitHub issue", "status_name": item.get("state", "open"), "number": item.get("number"), "url": item.get("html_url", ""), "labels": [x.get("name", "") for x in item.get("labels", [])]})
+        return out
+
+    def add_issue_comment(self, number: int, body: str) -> str:
+        r = requests.post(f"https://api.github.com/repos/{self.repo}/issues/{number}/comments", headers=self.headers, json={"body": body}, timeout=REQUEST_TIMEOUT)
+        if r.status_code >= 400:
+            raise GitHubError(f"add_issue_comment {r.status_code}: {_gh_error(r)}")
+        return r.json().get("html_url", "")
+
     def create_pr(self, head: str, base: str, title: str, body: str = "") -> dict:
         """Create a pull request. Requires `head` branch to already be pushed."""
         payload = {"title": title, "head": head, "base": base, "body": body or ""}
@@ -86,9 +101,28 @@ class GitHubClient:
 class MockGitHubClient:
     def __init__(self, repo: str = ""):
         self.repo = repo
-        self.pushed: list[tuple[str, str]] = []   # (branch, head_sha with repo?)
+        self.pushed: list[tuple[str, str]] = []
         self.prs: list[dict] = []
+        self.issue_comments: list[tuple[int, str]] = []
 
+    def open_issues(self, limit: int = 50) -> list[dict]:
+        issues = [
+            {"number": 1, "summary": "Fix the empty search state on the demo page", "description": "When a search has no matches, the results panel stays blank instead of showing the empty-state message. Reproduction steps and the affected component are included in the issue.", "labels": ["good first issue", "bug", "javascript"]},
+            {"number": 2, "summary": "Document the local development workflow", "description": "Add concise setup and test instructions for first-time contributors, including the mock-mode workflow.", "labels": ["documentation", "good first issue"]},
+            {"number": 3, "summary": "Add CSV export for filtered results", "description": "Users need to export the currently filtered result set as CSV. The issue describes expected columns and acceptance criteria.", "labels": ["enhancement", "help wanted"]},
+            {"number": 4, "summary": "Clarify the desired mobile navigation behavior", "description": "The issue reports that the mobile navigation feels confusing but does not yet define the intended interaction or design constraints.", "labels": ["needs discussion", "ux"]},
+        ]
+        return [
+            {"key": f"GH:{self.repo}#{issue['number']}", "project": self.repo, "repo": self.repo,
+             "summary": issue["summary"], "description": issue["description"], "issue_type": "GitHub issue",
+             "status_name": "open", "number": issue["number"],
+             "url": f"https://github.com/{self.repo}/issues/{issue['number']}", "labels": issue["labels"]}
+            for issue in issues[:limit]
+        ]
+
+    def add_issue_comment(self, number: int, body: str) -> str:
+        self.issue_comments.append((number, body))
+        return f"https://github.com/{self.repo}/issues/{number}#issuecomment-{len(self.issue_comments)}"
     def search_commits(self, key: str, limit: int = 10) -> list[dict]:
         if key == "DEMO-1":
             return [{"kind": "commit", "source": "GitHub", "url": "https://github.com/x/y/commit/abc", "sha": "abc123456789",

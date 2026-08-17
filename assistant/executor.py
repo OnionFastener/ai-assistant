@@ -48,12 +48,19 @@ def _comment(ctx: ExecContext, plan, action) -> list[str]:
     if not body:
         raise ValueError("comment requires non-empty 'body'")
     footer = f"\n\n---\n_Posted by AI assistant (approved). Run {plan.run_id}, ticket {plan.ticket.key}._"
+    if plan.ticket.key.startswith("GH:"):
+        from .integrations import build_github
+        number = int(plan.ticket.key.rsplit("#", 1)[1])
+        url = build_github(ctx.settings, plan.ticket.repo).add_issue_comment(number, body + footer)
+        return [f"GitHub issue comment added: {url}"]
     ctx.jira.add_comment(plan.ticket.key, body + footer)
     return ["comment added"]
 
 
 @register("transition")
 def _transition(ctx: ExecContext, plan, action) -> list[str]:
+    if plan.ticket.key.startswith("GH:"):
+        raise ValueError("GitHub Issues cannot be transitioned through Jira actions")
     to = str(action.params.get("to", "")).strip()
     if not to:
         raise ValueError("transition requires 'to'")
@@ -63,6 +70,8 @@ def _transition(ctx: ExecContext, plan, action) -> list[str]:
 
 @register("assign")
 def _assign(ctx: ExecContext, plan, action) -> list[str]:
+    if plan.ticket.key.startswith("GH:"):
+        raise ValueError("GitHub Issues cannot be assigned through Jira actions")
     assignee = str(action.params.get("assignee", "")).strip()
     if not assignee:
         raise ValueError("assign requires 'assignee'")

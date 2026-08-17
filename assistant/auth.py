@@ -13,7 +13,7 @@ from .config import settings
 COOKIE = "asst_session"
 COOKIE_MAX_AGE = 7 * 24 * 3600
 
-_sessions: dict[str, float] = {}  # token -> expiry
+_sessions: dict[str, tuple[float, str]] = {}
 
 
 def verify_password(candidate: str) -> bool:
@@ -22,9 +22,14 @@ def verify_password(candidate: str) -> bool:
 
 def create_session() -> str:
     token = secrets.token_urlsafe(32)
-    _sessions[token] = time.time() + COOKIE_MAX_AGE
+    csrf = secrets.token_urlsafe(32)
+    _sessions[token] = (time.time() + COOKIE_MAX_AGE, csrf)
     return token
 
+
+def csrf_token_from_session(token: str) -> str:
+    session = _sessions.get(token)
+    return session[1] if session and session[0] > time.time() else ""
 
 def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=COOKIE_MAX_AGE)
@@ -36,11 +41,10 @@ def destroy_session(request: Request, response: Response) -> None:
         _sessions.pop(token, None)
     response.delete_cookie(COOKIE)
 
-
 def _valid(request: Request) -> bool:
     token = request.cookies.get(COOKIE)
-    exp = _sessions.get(token or "")
-    return bool(token and exp and exp > time.time())
+    session = _sessions.get(token or "")
+    return bool(token and session and session[0] > time.time())
 
 
 def user_authed(request: Request) -> bool:
@@ -52,9 +56,15 @@ def require_user(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-def csrf_guard(request: Request) -> None:
-    """Mutations must echo the session token in the X-CSRF header."""
+def csrf_token(request: Request) -> str:
     token = request.cookies.get(COOKIE)
+    session = _sessions.get(token or "")
+    return session[1] if session and session[0] > time.time() else ""
+
+
+def csrf_guard(request: Request) -> None:
+    """Mutations must echo the server-side CSRF token for this session."""
+    expected = csrf_token(request)
     header = request.headers.get("x-csrf", "")
-    if not token or not hmac.compare_digest(token.encode(), header.encode()):
+    if not expected or not hmac.compare_digest(expected.encode(), header.encode()):
         raise HTTPException(status_code=403, detail="CSRF token mismatch")

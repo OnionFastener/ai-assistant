@@ -32,6 +32,9 @@ class Settings:
     model_triage: str = ""
     model_action: str = ""
     jql_queries: list = field(default_factory=list)
+    scan_jira: bool = True
+    scan_github_issues: bool = False
+    github_issue_repos: list = field(default_factory=list)
     schedule_enabled: bool = False
     schedule_hour: int = 2
     schedule_minute: int = 0
@@ -48,6 +51,11 @@ class Settings:
         if path.exists():
             data = json.loads(path.read_text())
             s.jql_queries = data.get("jql_queries", [])
+            sources = data.get("sources", {}) or {}
+            s.scan_jira = bool((sources.get("jira", {}) or {}).get("enabled", s.scan_jira))
+            github_issues = sources.get("github_issues", {}) or {}
+            s.scan_github_issues = bool(github_issues.get("enabled", s.scan_github_issues))
+            s.github_issue_repos = list(github_issues.get("repos", s.github_issue_repos) or [])
             sch = data.get("schedule", {})
             s.schedule_enabled = bool(sch.get("enabled", False))
             s.schedule_hour = int(sch.get("hour", 2))
@@ -86,6 +94,14 @@ class Settings:
         env_repos = [r.strip() for r in os.getenv("ASST_GITHUB_REPOS", "").split(",") if r.strip()]
         if env_repos:
             s.github_repos = env_repos
+        env_issue_repos = [r.strip() for r in os.getenv("ASST_GITHUB_ISSUE_REPOS", "").split(",") if r.strip()]
+        if env_issue_repos:
+            s.github_issue_repos = env_issue_repos
+            s.scan_github_issues = True
+        if "ASST_SCAN_JIRA" in os.environ:
+            s.scan_jira = _to_bool(os.getenv("ASST_SCAN_JIRA"))
+        if "ASST_SCAN_GITHUB_ISSUES" in os.environ:
+            s.scan_github_issues = _to_bool(os.getenv("ASST_SCAN_GITHUB_ISSUES"))
         env_map = {}
         for pair in os.getenv("ASST_GITHUB_PROJECT_MAP", "").split():
             if "=" in pair:
@@ -98,6 +114,8 @@ class Settings:
             s.github_repos = [s.github_repo]
         if not s.github_repo and s.github_repos:
             s.github_repo = s.github_repos[0]
+        if s.mock:
+            s.github_issue_repos = ["demo/mock-repo"]
         if REPO_MAP_PATH.exists():
             try:
                 s.repo_map = dict(json.loads(REPO_MAP_PATH.read_text()))

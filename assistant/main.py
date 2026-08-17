@@ -48,7 +48,7 @@ def login(payload: LoginIn):
     if not auth.verify_password(payload.password):
         raise HTTPException(status_code=401, detail="Wrong password")
     token = auth.create_session()
-    response = JSONResponse({"ok": True, "csrf": token})
+    response = JSONResponse({"ok": True, "csrf": auth.csrf_token_from_session(token)})
     auth.set_session_cookie(response, token)
     return response
 
@@ -68,7 +68,9 @@ def health():
 
 @app.get("/api/session", include_in_schema=False)
 def session_state(request: Request):
-    return {"authed": auth.user_authed(request)}
+    if not auth.user_authed(request):
+        return {"authed": False}
+    return {"authed": True, "csrf": auth.csrf_token(request)}
 
 
 class _Mutation:
@@ -92,6 +94,19 @@ def manual_run(payload: ManualRunIn):
     run_id = runner.create_run(trigger="manual", jql_label="override" if jql else "config")
     threading.Thread(target=runner.process_run, args=(run_id, jql), daemon=True).start()
     return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/runs/{run_id}/stop", dependencies=[_require_mutation])
+def stop_run(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    if run.status not in ("queued", "fetching", "triaging", "stopping"):
+        raise HTTPException(409, f"Run cannot be stopped from status '{run.status}'")
+    run.status = "stopped"
+    db.commit()
+    return {"run_id": run.id, "status": run.status,
+            "pending_plans": sum(1 for ticket in run.tickets for plan in ticket.plans if plan.review_status == "pending")}
 
 
 @app.get("/api/runs")
@@ -271,6 +286,7 @@ def _execute_approved(plan_id: int) -> None:
 def _config_dict() -> dict:
     return {
         "jql_queries": settings.jql_queries,
+        "sources": {"jira": {"enabled": settings.scan_jira}, "github_issues": {"enabled": settings.scan_github_issues, "repos": settings.github_issue_repos}},
         "schedule": {"enabled": settings.schedule_enabled, "hour": settings.schedule_hour,
                      "minute": settings.schedule_minute},
         "jira": {"base_url": settings.jira_base_url, "email": settings.jira_email,
@@ -293,6 +309,12 @@ def get_config(request: Request):
 @app.put("/api/config", dependencies=[_require_mutation])
 def put_config(payload: ConfigIn):
     settings.jql_queries = payload.jql_queries
+    sources = payload.sources or {}
+    settings.scan_jira = bool((sources.get("jira", {}) or {}).get("enabled", settings.scan_jira))
+    github_issues = sources.get("github_issues", {}) or {}
+    settings.scan_github_issues = bool(github_issues.get("enabled", settings.scan_github_issues))
+    repos_for_issues = github_issues.get("repos", settings.github_issue_repos)
+    settings.github_issue_repos = (["demo/mock-repo"] if settings.mock else [str(repo).strip() for repo in repos_for_issues if str(repo).strip()])
     sch = payload.schedule
     settings.schedule_enabled = bool(sch.get("enabled", settings.schedule_enabled))
     settings.schedule_hour = int(sch.get("hour", settings.schedule_hour))
@@ -316,6 +338,7 @@ def put_config(payload: ConfigIn):
 
     settings.settings_path.write_text(json.dumps({
         "jql_queries": settings.jql_queries,
+        "sources": {"jira": {"enabled": settings.scan_jira}, "github_issues": {"enabled": settings.scan_github_issues, "repos": settings.github_issue_repos}},
         "schedule": {"enabled": settings.schedule_enabled, "hour": settings.schedule_hour,
                      "minute": settings.schedule_minute},
         "jira": {"base_url": settings.jira_base_url, "email": settings.jira_email,

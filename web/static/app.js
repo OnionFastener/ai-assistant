@@ -65,10 +65,12 @@ function navigate() {
 }
 
 async function boot() {
-  let authed = false;
+  let session = { authed: false };
   try {
-    authed = !!(await api("/api/session")).authed;
+    session = await api("/api/session");
   } catch {}
+  const authed = !!session.authed;
+  state.csrf = session.csrf || null;
   if (!authed) location.hash = "#/login";
   $("#logout").addEventListener("click", async () => {
     try { await api("/api/logout", { method: "POST" }); } catch {}
@@ -122,8 +124,9 @@ async function renderDashboard(app) {
           <div><h2>Pending approvals</h2><div><span class="chip warn">${approvals.length}</span></div></div>
         </div>
         <div class="actions">
-          <button id="run-config">Run now (configured JQL)</button>
+          <button id="run-config">Run now (configured sources)</button>
           <button id="run-custom" class="ghost">Run with custom JQL…</button>
+          ${latest && ["queued", "fetching", "triaging", "stopping"].includes(latest.status) ? `<button id="stop-run" class="ghost">Stop triage and review finished tickets</button>` : ""}
         </div>
       </div>
       <h2>Ready for review</h2>
@@ -131,6 +134,15 @@ async function renderDashboard(app) {
     $("#run-config").addEventListener("click", async () => {
       await api("/api/runs", { method: "POST", body: {} });
       toast("Run queued — refreshing in 2s"); setTimeout(() => renderDashboard(app), 2000);
+    });
+    const stopButton = $("#stop-run");
+    if (stopButton) stopButton.addEventListener("click", async () => {
+      stopButton.disabled = true;
+      try {
+        const stopped = await api(`/api/runs/${latest.id}/stop`, { method: "POST" });
+        toast(`Stopped run — ${stopped.pending_plans} finished ticket(s) are ready for review`);
+        setTimeout(() => renderDashboard(app), 500);
+      } catch (e) { toast(e.message); stopButton.disabled = false; }
     });
     $("#run-custom").addEventListener("click", async () => {
       const jql = prompt("JQL (single query):");
@@ -304,6 +316,11 @@ async function renderConfig(app) {
     const [c, repoMap] = await Promise.all([api("/api/config"), api("/api/repo-map")]);
     app.innerHTML = `<h1>Config</h1>
       <div class="panel" style="max-width:760px">
+        <div class="row">
+          <div><label><input id="cfg-source-jira" type="checkbox" ${(c.sources?.jira?.enabled ?? true) ? "checked" : ""}> Scan Jira issues</label></div>
+          <div style="flex:2"><label><input id="cfg-source-github" type="checkbox" ${c.sources?.github_issues?.enabled ? "checked" : ""}> Scan public GitHub Issues${c.mock ? " (mock demo)" : ""}</label>
+            <textarea id="cfg-gissue-repos" rows="3" placeholder="owner/repo, one per line">${esc((c.sources?.github_issues?.repos || []).join("\n"))}</textarea></div>
+        </div>
         <label>JQL queries (one per line — <span class="mono">name | jql</span>)</label>
         <textarea id="cfg-jql" rows="4">${esc((c.jql_queries || []).map(q => `${q.name} | ${q.jql}`).join("\n"))}</textarea>
         <div class="row">
@@ -347,6 +364,7 @@ async function renderConfig(app) {
           .filter(([k, v]) => k && v));
       const body = {
         jql_queries: parseJql,
+        sources: { jira: { enabled: $("#cfg-source-jira").checked }, github_issues: { enabled: $("#cfg-source-github").checked, repos: $("#cfg-gissue-repos").value.split("\n").map(s => s.trim()).filter(Boolean) } },
         schedule: { enabled: $("#cfg-sched-on").checked, hour: +$("#cfg-hour").value, minute: +$("#cfg-minute").value },
         jira: { base_url: $("#cfg-jbase").value, email: $("#cfg-jemail").value,
                 account_id: $("#cfg-jacc").value, devinfo_field: $("#cfg-jdev").value },

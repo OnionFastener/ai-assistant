@@ -32,6 +32,16 @@ def _log(db, run_id: int, message: str, level: str = "info", key: str = "") -> N
     log.log({"debug": 10, "info": 20, "warn": 30, "error": 40}.get(level, 20), "%s %s", run_id, message)
 
 
+
+def _stop_requested(db, run, run_id: int) -> bool:
+    db.refresh(run)
+    if run.status not in ("stopping", "stopped"):
+        return False
+    run.status = "stopped"
+    run.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    _log(db, run_id, "stopped; completed tickets remain in approvals")
+    return True
 def process_run(run_id: int, jql_override: str | None = None) -> None:
     """Run the pipeline in a background thread. Never raises."""
     db = SessionLocal()
@@ -55,36 +65,21 @@ def process_run(run_id: int, jql_override: str | None = None) -> None:
 def _process(db, run_id: int, jql_override: str | None) -> None:
     run = db.get(Run, run_id)
     paths = load_paths(settings.paths_dir)
-    jira = build_jira(settings)
+    jira = build_jira(settings) if settings.scan_jira else None
 
     import shutil
     shutil.rmtree(settings.workspace / f"run-{run_id}", ignore_errors=True)
+    if _stop_requested(db, run, run_id):
+        return
     run.status = "fetching"
     db.commit()
     _log(db, run_id, "started")
 
-    queries = ([{"name": "override", "jql": jql_override}] if jql_override
-               else settings.jql_queries or [])
-    if not queries:
-        raise RuntimeError("No JQL queries configured (config/settings.json)")
-
-    tickets_by_key: dict[str, dict] = {}
-    for q in queries:
-        label, jql = q.get("name", "?"), q.get("jql", "")
-        if not jql:
-            continue
-        _log(db, run_id, f"searching JQL '{label}'")
-        try:
-            found = jira.search(jql, max_results=settings.max_tickets_per_run + 50)
-        except Exception as e:  # noqa: BLE001
-            _log(db, run_id, f"JQL '{label}' failed: {e}", level="error")
-            run.status = "failed"
-            run.error = f"JQL '{label}': {e}"
-            run.finished_at = datetime.now(timezone.utc)
-            db.commit()
-            return
-        for t in found:
-            tickets_by_key.setdefault(t["key"], t)
+    from .issue_sources import fetch_tickets
+    tickets_by_key = fetch_tickets(
+        settings, jira, jql_override,
+        lambda message: _log(db, run_id, message),
+    )
 
     # Local dedupe on key from pending plans (DESIGN §6): a ticket already waiting
     # for review is not re-fetched, so repeated runs cannot pile up duplicate plans.
@@ -109,21 +104,25 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
         db.commit()
         return
     _log(db, run_id, f"{len(limited)} tickets matched")
+    if _stop_requested(db, run, run_id):
+        return
 
     tickets = []
     for t in limited:
-        row = Ticket(run_id=run_id, key=t["key"], project=t.get("project", ""),
+        row = Ticket(run_id=run_id, key=t["key"], project=t.get("project", ""), repo=t.get("repo", ""),
                      summary=t.get("summary", ""), description=t.get("description", ""),
-                     issue_type=t.get("issue_type", ""), status_name=t.get("status_name", ""),
-                     stage="incoming")
+                     issue_type=t.get("issue_type", ""), status_name=t.get("status_name", ""), stage="incoming")
+        if t.get("url"):
+            row.links.append(Link(kind="issue", source="GitHub", url=t["url"], repo=t.get("repo", ""), title=t.get("summary", ""), meta={"number": t.get("number"), "labels": t.get("labels", [])}))
         db.add(row)
         tickets.append(row)
     db.commit()
 
-    # --- context assembly: linked commits & PRs ---
     run.status = "triaging"
     db.commit()
     for row in tickets:
+        if row.key.startswith("GH:"):
+            continue
         links: list[dict] = []
         try:
             links += jira.get_devinfo(row.key, settings.jira_devinfo_field)
@@ -133,8 +132,7 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
             comments = jira.get_comments(row.key)
             if comments:
                 section = "\n\n## Comments\n" + "\n\n".join(
-                    f"({c.get('created', '')} {c.get('author', '')}): {c.get('body', '')}"
-                    for c in comments
+                    f"({c.get('created', '')} {c.get('author', '')}): {c.get('body', '')}" for c in comments
                 )
                 row.description = (row.description + section).strip()
         except Exception as e:  # noqa: BLE001
@@ -143,10 +141,10 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
             links += search_context(settings, row.key)
         except Exception as e:  # noqa: BLE001
             _log(db, run_id, f"{row.key}: github context failed: {e}", level="warn", key=row.key)
-        for l in links:
-            db.add(Link(ticket_id=row.id, kind=l.get("kind", ""), source=l.get("source", ""),
-                        url=l.get("url", ""), repo=l.get("repo", ""), title=l.get("title", ""),
-                        sha=l.get("sha", ""), pr_state=l.get("pr_state", ""), meta=l.get("meta", {})))
+        for link in links:
+            db.add(Link(ticket_id=row.id, kind=link.get("kind", ""), source=link.get("source", ""),
+                        url=link.get("url", ""), repo=link.get("repo", ""), title=link.get("title", ""),
+                        sha=link.get("sha", ""), pr_state=link.get("pr_state", ""), meta=link.get("meta", {})))
     db.commit()
 
     repos = configured_repos(settings)
@@ -160,14 +158,13 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
         )
     db.commit()
 
-    # --- triage config: user-editable global instructions/context fields ---
     from .triage_config import load_triage_config
 
     triage_cfg = load_triage_config()
-
-    # --- triage each ticket + build a plan ---
     partial = False
     for row in tickets:
+        if _stop_requested(db, run, run_id):
+            return
         try:
             ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
             result = run_triage(settings, settings.workspace / f"run-{run_id}", ctx, paths, triage_cfg)

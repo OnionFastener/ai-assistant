@@ -56,6 +56,26 @@ def test_session_endpoint(client):
 
 # ---- runs + approvals happy path (mock pipeline) ----
 
+
+def test_stop_active_run_preserves_existing_approvals(authed):
+    from assistant.db import SessionLocal
+    from assistant.models import ActionPlan, Run, Ticket
+
+    db = SessionLocal()
+    run = Run(status="triaging")
+    db.add(run)
+    db.commit()
+    ticket = Ticket(run_id=run.id, key="STOP-1", summary="Finished ticket", stage="awaiting_approval")
+    db.add(ticket)
+    db.commit()
+    db.add(ActionPlan(ticket_id=ticket.id, run_id=run.id, summary="Ready plan", review_status="pending"))
+    db.commit()
+    db.close()
+
+    response = authed["client"].post(f"/api/runs/{run.id}/stop", headers={"X-CSRF": authed["csrf"]})
+    assert response.status_code == 200
+    assert response.json()["status"] == "stopped"
+    assert response.json()["pending_plans"] == 1
 def _start_and_wait(authed, jql=None, expected=5):
     c = authed["client"]
     body = {"jql": jql} if jql else {}

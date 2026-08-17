@@ -44,6 +44,9 @@ settings.max_tickets_per_run = 20
 # otherwise resolve DEMO-1 to the first configured OnionFastener repo).
 settings.github_repos = ["owner/demo-repo-a", "owner/demo-repo-b"]
 settings.github_repo = "owner/demo-repo-a"
+settings.scan_jira = True
+settings.scan_github_issues = False
+settings.github_issue_repos = ["demo/mock-repo"]
 
 
 @pytest.fixture(autouse=True)
