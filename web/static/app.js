@@ -92,7 +92,7 @@ function renderLogin(app) {
         <label for="pw">Password</label>
         <input id="pw" type="password" autocomplete="current-password">
         <div class="actions"><button id="go">Sign in</button></div>
-        <p class="small muted">For demo, enter <span class="mono">mock-assistant</span>. Live mode uses <span class="mono">ASST_ADMIN_PASSWORD</span> from <span class="mono">.env</span>.</p>
+        <p class="small muted">For demo, enter <span class="mono">mock-assistant</span>.</p>
       </div>
     </div>`;
   const doLogin = async () => {
