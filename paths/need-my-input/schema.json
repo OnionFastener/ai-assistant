@@ -3,6 +3,7 @@
   "enabled": true,
   "allowed_actions": ["comment", "transition", "assign"],
   "required_backend": null,
+  "work": { "action_timeout_seconds": 30 },
   "approval": { "editable": ["comment", "assignee"] },
   "default_actions": [
     { "kind": "comment", "params": { "body": "" } },

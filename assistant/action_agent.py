@@ -22,6 +22,9 @@ from .schemas import ActionPlanInput
 
 log = logging.getLogger("assistant.action_agent")
 
+DEFAULT_ACTION_TIMEOUT = 300
+ACTION_RETRY_TIMEOUT = 60
+
 
 def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: str = "") -> ActionPlanInput:
     """Main entry. Returns a full action plan (mock or real)."""
@@ -37,12 +40,21 @@ def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: s
     else:
         wrapper = load_action_config().instruct or ""
         prompt = _build_prompt(ticket_ctx, behavior, allowed, wrapper)
+        timeout = _action_timeout(path)
         text = op.run_agent(prompt, agent="action-worker", cwd=str(sandbox),
-                            model=settings.model_action)
+                            model=settings.model_action, timeout=timeout)
         plan_json = _parse_json_retry(text, prompt, "action-worker", sandbox)
 
     plan = _normalize_plan(plan_json, run_id, ticket_key, sandbox, github_repo=repo)
     return plan
+
+
+def _action_timeout(path) -> int:
+    try:
+        timeout = int((path.work or {}).get("action_timeout_seconds", DEFAULT_ACTION_TIMEOUT))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_ACTION_TIMEOUT
+    return max(30, min(timeout, 3600))
 
 
 def prepare_sandbox(run_id: int, ticket_key: str, workspace_root: Path, repo: str = "") -> Path:
@@ -96,7 +108,7 @@ def _parse_json_retry(text: str, prompt: str, agent: str, cwd: Path) -> dict:
     )
     for _ in range(3):
         text2 = op.run_agent(f"{contract}\n\n{prompt}", agent=agent, cwd=str(cwd),
-                             model=settings.model_action)
+                             model=settings.model_action, timeout=ACTION_RETRY_TIMEOUT)
         data = _parse_plan_json(text2)
         if data is not None:
             return data

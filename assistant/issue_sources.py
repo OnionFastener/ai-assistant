@@ -1,6 +1,8 @@
 """Inbound Jira and GitHub Issue source collection."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .integrations import build_github
 
 
@@ -18,10 +20,17 @@ def fetch_tickets(settings, jira, jql_override: str | None, emit) -> dict[str, d
             for ticket in jira.search(jql, max_results=settings.max_tickets_per_run + 50):
                 tickets.setdefault(ticket["key"], ticket)
     if settings.scan_github_issues:
-        for repo in settings.github_issue_repos:
+        repos = list(settings.github_issue_repos)
+        for repo in repos:
             emit(f"searching GitHub issues in '{repo}'")
-            for ticket in build_github(settings, repo).open_issues(settings.max_tickets_per_run + 50):
-                tickets.setdefault(ticket["key"], ticket)
+        with ThreadPoolExecutor(max_workers=min(4, len(repos) or 1)) as pool:
+            searches = {
+                repo: pool.submit(build_github(settings, repo).open_issues, settings.max_tickets_per_run + 50)
+                for repo in repos
+            }
+            for repo in repos:
+                for ticket in searches[repo].result():
+                    tickets.setdefault(ticket["key"], ticket)
     if not tickets and not (settings.scan_jira or settings.scan_github_issues):
         raise RuntimeError("No issue source is enabled")
     return tickets

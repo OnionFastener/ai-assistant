@@ -11,11 +11,13 @@
   ],
   "sources": {
     "jira": {
-      "enabled": true
+      "enabled": false
     },
     "github_issues": {
       "enabled": true,
-      "repos": []
+      "repos": [
+        "onionfastener/ai-assistant"
+      ]
     }
   },
   "schedule": {
@@ -24,16 +26,17 @@
     "minute": 0
   },
   "jira": {
-    "base_url": "",
-    "email": "",
+    "base_url": "https://seeksong.atlassian.net",
+    "email": "owensong.ca@gmail.com",
     "account_id": "",
     "devinfo_field": ""
   },
   "github": {
-    "repo": "owner/repo-a",
+    "repo": "OnionFastener/onionfastener.github.io",
     "repos": [
-      "owner/repo-a",
-      "owner/repo-b"
+      "OnionFastener/onionfastener.github.io",
+      "OnionFastener/wordle-clone",
+      "OnionFastener/ai-assistant"
     ],
     "project_repo_map": {
       "AA": "OnionFastener/ai-assistant"

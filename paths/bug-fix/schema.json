@@ -10,7 +10,8 @@
   ],
   "required_backend": "github",
   "work": {
-    "clone": true
+    "clone": true,
+    "action_timeout_seconds": 900
   },
   "approval": {
     "require_pr_diff": true,

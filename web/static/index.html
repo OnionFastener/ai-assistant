@@ -3,24 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Assistant</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <title>Relay — AI Work Console</title>
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
   <header id="topbar">
-    <div class="brand">AI&nbsp;Assistant</div>
-    <nav id="nav">
-      <a href="#/dashboard">Dashboard</a>
-      <a href="#/approvals">Approvals</a>
-      <a href="#/runs">Runs</a>
-      <a href="#/config">Config</a>
-      <a href="#/triage">Triage</a>
-      <a href="#/paths">Paths</a>
+    <a class="brand" href="#/dashboard" aria-label="Relay home"><span class="brand-mark"><i></i><i></i><i></i></span><span>relay<span class="brand-dot">.</span></span></a>
+    <nav id="nav" aria-label="Main navigation">
+      <a href="#/dashboard"><span class="nav-icon">⌂</span>Overview</a><a href="#/approvals"><span class="nav-icon">✓</span>Review queue</a><a href="#/runs"><span class="nav-icon">◌</span>Activity</a>
+      <span class="nav-label">Configure</span><a href="#/config"><span class="nav-icon">⌘</span>Workspace</a><a href="#/triage"><span class="nav-icon">✦</span>Intelligence</a><a href="#/paths"><span class="nav-icon">⌁</span>Paths</a>
     </nav>
-    <button id="logout" class="ghost">Log out</button>
+    <div class="topbar-actions"><span class="presence"><i></i> System ready</span><button id="logout" class="ghost">Log out</button></div>
   </header>
   <main id="app"></main>
   <div id="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=4"></script>
 </body>
 </html>

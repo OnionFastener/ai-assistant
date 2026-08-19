@@ -24,9 +24,7 @@ async function api(path, { method = "GET", body } = {}) {
   } else if (method !== "GET") {
     opts.headers["X-CSRF"] = state.csrf || "";
   }
-  const url = path.startsWith("/api/")
-  ? "/project2" + path
-  : path;
+  const url = path;
   const res = await fetch(url, opts);
   if (res.status === 401) { setChrome(false); location.hash = "#/login"; throw new Error("Not authenticated"); }
   const data = await res.json().catch(() => ({}));
@@ -64,6 +62,9 @@ function navigate() {
     paths: () => renderPaths(app),
   };
   const fn = pages[route] || renderDashboard;
+  document.querySelectorAll("#nav a").forEach((link) => {
+    link.classList.toggle("active", link.getAttribute("href") === "#/" + route || (route === "run" && link.getAttribute("href") === "#/runs"));
+  });
   fn.call(null, app, param);
 }
 
@@ -92,7 +93,7 @@ function renderLogin(app) {
         <label for="pw">Password</label>
         <input id="pw" type="password" autocomplete="current-password">
         <div class="actions"><button id="go">Sign in</button></div>
-        <p class="small muted">For demo, enter <span class="mono">mock-assistant</span>.</p>
+        <p class="small muted">Use the console password configured in your environment.</p>
       </div>
     </div>`;
   const doLogin = async () => {
@@ -103,6 +104,7 @@ function renderLogin(app) {
       location.hash = "#/dashboard";
     } catch (e) { toast(e.message); }
   };
+  document.getElementById("go").addEventListener("click", doLogin);
   $("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
   $("#pw").focus();
 }
@@ -115,24 +117,23 @@ async function renderDashboard(app) {
       api("/api/health"), api("/api/runs"), api("/api/approvals"),
     ]);
     const latest = runs[0] || null;
+    const completed = runs.filter(r => r.status === "completed").length;
+    const ticketTotal = runs.reduce((total, r) => total + (r.ticket_count || 0), 0);
     app.innerHTML = `
-      <h1>Dashboard</h1>
-      <div class="panel">
-        <div class="grid">
-          <div><h2>Mode</h2><div>${health.mock ? '<span class="chip warn">mock</span>' : '<span class="chip ok">live</span>'}</div>
-            <div class="small muted">${health.warnings || "all configured"}</div></div>
-          <div><h2>Latest run</h2><div>${latest ? chip(latest.status) : chip("none")}</div>
-            <div class="small muted">${latest ? fmt(latest.started_at) + " · " + latest.ticket_count + " tickets" : ""}</div></div>
-          <div><h2>Pending approvals</h2><div><span class="chip warn">${approvals.length}</span></div></div>
-        </div>
-        <div class="actions">
-          <button id="run-config">Run now (configured sources)</button>
-          <button id="run-custom" class="ghost">Run with custom JQL…</button>
-          ${latest && ["queued", "fetching", "triaging", "stopping"].includes(latest.status) ? `<button id="stop-run" class="ghost">Stop triage and review finished tickets</button>` : ""}
-        </div>
-      </div>
-      <h2>Ready for review</h2>
-      <div class="muted small">See the <a class="link" href="#/approvals">Approvals</a> page for per-ticket plans.</div>`;
+      <div class="hero"><div><div class="eyebrow">Your AI operations desk</div><h1>Good work starts with a clear queue.</h1><p class="page-intro">Review concrete AI proposals, then send only the work you trust into your tools.</p></div><div class="presence"><i></i> Review before execution</div></div>
+      <div class="dashboard-grid">
+        <section>
+          <div class="panel metrics">
+            <div class="metric"><div class="metric-label">Review queue</div><div class="metric-value">${approvals.length}</div><div class="metric-note">plans ready for your call</div></div>
+            <div class="metric"><div class="metric-label">Latest scan</div><div class="metric-value">${latest ? latest.ticket_count : 0}</div><div class="metric-note">${latest ? `${esc(latest.status)} · ${fmt(latest.started_at)}` : "no scans yet"}</div></div>
+            <div class="metric"><div class="metric-label">Tickets assessed</div><div class="metric-value">${ticketTotal}</div><div class="metric-note">across ${runs.length} recorded runs</div></div>
+          </div>
+          <div class="actions overview-actions"><button id="run-config">Run triage now</button><button id="run-custom" class="ghost">Custom query</button>${latest && ["queued", "fetching", "triaging", "stopping"].includes(latest.status) ? `<button id="stop-run" class="ghost">Stop triage</button>` : ""}</div>
+          <div class="section-head"><h2>Ready for review</h2><a class="link small" href="#/approvals">Open queue →</a></div>
+          ${approvals.length ? `<div class="panel review-callout"><strong>${approvals.length} proposal${approvals.length === 1 ? "" : "s"} need your decision.</strong><span class="small muted">Every action can be reviewed and edited before execution.</span></div>` : `<div class="queue-empty">Your review queue is clear. Run a scan when you’re ready to pick up new work.</div>`}
+        </section>
+        <aside class="panel work-report"><div class="eyebrow">Work report</div><h2>Operational pulse</h2><div class="report-line"><span>System mode</span><strong>${health.mock ? "DEMO" : "LIVE"}</strong></div><div class="report-line"><span>Runs completed</span><strong>${completed}</strong></div><div class="report-line"><span>Tickets assessed</span><strong>${ticketTotal}</strong></div><p class="small muted">${esc(health.warnings || "All connected services look configured.")}</p></aside>
+      </div>`;
     $("#run-config").addEventListener("click", async () => {
       await api("/api/runs", { method: "POST", body: {} });
       toast("Run queued — refreshing in 2s"); setTimeout(() => renderDashboard(app), 2000);
@@ -481,6 +482,9 @@ async function renderPaths(app) {
           ${p.enabled ? '<span class="chip ok">enabled</span>' : '<span class="chip err">disabled</span>'}
           ${p.valid ? "" : `<span class="chip err">${esc(p.error)}</span>`}
           <span class="chip">actions: ${esc((p.allowed_actions || []).join(", "))}</span></div>
+        <label>Action-agent timeout (seconds)</label>
+        <input data-path-timeout="${esc(p.id)}" type="number" min="30" max="3600" value="${esc(p.work?.action_timeout_seconds || 300)}">
+        <div class="small muted">Used only for code-backed paths; lightweight paths do not invoke a code agent.</div>
         <label>instruct.md</label>
         <textarea data-path-instruct="${esc(p.id)}" rows="7">${esc(p.instruct)}</textarea>
         <label>behavior.md <span class="small muted">(action-agent guidance; blank = reuse instruct.md)</span></label>
@@ -506,6 +510,8 @@ async function renderPaths(app) {
       const schema = JSON.parse(b.parentElement.parentElement.querySelector(`[data-path-schema="${id}"]`).value);
       const instruct = b.parentElement.parentElement.querySelector(`[data-path-instruct="${id}"]`).value;
       const behavior = b.parentElement.parentElement.querySelector(`[data-path-behavior="${id}"]`).value;
+      const timeout = +b.parentElement.parentElement.querySelector(`[data-path-timeout="${id}"]`).value;
+      if (timeout) schema.work = { ...(schema.work || {}), action_timeout_seconds: timeout };
       const body = { id, name: schema.name, enabled: schema.enabled ?? true,
         allowed_actions: schema.allowed_actions || [], required_backend: schema.required_backend || null,
         work: schema.work || {}, approval: schema.approval || {}, default_actions: schema.default_actions || [],

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from . import executor
@@ -13,6 +14,9 @@ from .paths import get_path, load_paths
 from .triage import build_ticket_context, run_triage
 
 log = logging.getLogger("assistant.runner")
+
+TRIAGE_WORKERS = 3
+PLAN_WORKERS = 2
 
 
 def create_run(trigger: str = "manual", jql_label: str = "") -> int:
@@ -162,26 +166,74 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
 
     triage_cfg = load_triage_config()
     partial = False
-    for row in tickets:
+    contexts = {
+        row.id: build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
+        for row in tickets
+    }
+    _log(db, run_id, f"triaging {len(tickets)} tickets with up to {min(TRIAGE_WORKERS, len(tickets))} parallel agents")
+    triage_results = []
+    with ThreadPoolExecutor(max_workers=min(TRIAGE_WORKERS, len(tickets))) as pool:
+        triages = {
+            row.id: pool.submit(
+                run_triage, settings, settings.workspace / f"run-{run_id}" / f"triage-{row.id}",
+                contexts[row.id], paths, triage_cfg,
+            )
+            for row in tickets
+        }
+        for row in tickets:
+            if _stop_requested(db, run, run_id):
+                return
+            try:
+                result = triages[row.id].result()
+                row.stage = "triaged"
+                row.triage_path_id = result.path_id
+                row.triage_reason = result.reason
+                row.triage_confidence = result.confidence
+                row.need_my_input = result.need_my_input
+                db.commit()
+                triage_results.append((row, result))
+            except Exception as e:  # noqa: BLE001
+                row.stage = "failed"
+                row.error = str(e)
+                partial = True
+                _log(db, run_id, f"{row.key}: triage failed: {e}", level="error", key=row.key)
+                db.commit()
+    code_plans = []
+    for row, result in triage_results:
         if _stop_requested(db, run, run_id):
             return
+        path = get_path(paths, result.path_id)
+        if path and path.required_backend == "github":
+            code_plans.append((row, result, path))
+            continue
         try:
-            ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
-            result = run_triage(settings, settings.workspace / f"run-{run_id}", ctx, paths, triage_cfg)
-            row.stage = "triaged"
-            row.triage_path_id = result.path_id
-            row.triage_reason = result.reason
-            row.triage_confidence = result.confidence
-            row.need_my_input = result.need_my_input
-            db.commit()
             _make_plan(db, run_id, row, result, paths, triage_cfg)
         except Exception as e:  # noqa: BLE001
             row.stage = "failed"
             row.error = str(e)
             partial = True
-            _log(db, run_id, f"{row.key}: triage failed: {e}", level="error", key=row.key)
+            _log(db, run_id, f"{row.key}: plan failed: {e}", level="error", key=row.key)
             db.commit()
-
+    if code_plans:
+        _log(db, run_id, f"building {len(code_plans)} code plans with up to {min(PLAN_WORKERS, len(code_plans))} parallel agents")
+        for row, _, _ in code_plans:
+            _supersede_prior_pending(db, row.key)
+        with ThreadPoolExecutor(max_workers=min(PLAN_WORKERS, len(code_plans))) as pool:
+            planned = {
+                row.id: pool.submit(_build_code_plan, run_id, row, result, path, triage_cfg)
+                for row, result, path in code_plans
+            }
+            for row, result, path in code_plans:
+                if _stop_requested(db, run, run_id):
+                    return
+                try:
+                    _save_code_plan(db, run_id, row, result, planned[row.id].result())
+                except Exception as e:  # noqa: BLE001
+                    row.stage = "failed"
+                    row.error = str(e)
+                    partial = True
+                    _log(db, run_id, f"{row.key}: plan failed: {e}", level="error", key=row.key)
+                    db.commit()
     run.status = "partial" if partial else "completed"
     run.finished_at = datetime.now(timezone.utc)
     db.commit()
@@ -214,10 +266,18 @@ def _supersede_prior_pending(db, ticket_key: str) -> None:
 
 def _make_code_plan(db, run_id: int, row: Ticket, result, path, triage_cfg=None) -> None:
     """Code path: action agent works in a sandbox clone, patch is captured for review."""
+    plan_input = _build_code_plan(run_id, row, result, path, triage_cfg)
+    _save_code_plan(db, run_id, row, result, plan_input)
+
+
+def _build_code_plan(run_id: int, row: Ticket, result, path, triage_cfg=None):
     from .action_agent import run_for_ticket
 
     ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
-    plan_input = run_for_ticket(run_id, row.key, ctx, path, repo=row.repo)
+    return run_for_ticket(run_id, row.key, ctx, path, repo=row.repo)
+
+
+def _save_code_plan(db, run_id: int, row: Ticket, result, plan_input) -> None:
     plan = ActionPlan(ticket_id=row.id, run_id=run_id, path_id=result.path_id,
                       summary=plan_input.summary or row.summary, narrative=plan_input.narrative)
     for i, a in enumerate(plan_input.actions):

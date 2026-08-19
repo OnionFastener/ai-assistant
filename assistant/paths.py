@@ -95,6 +95,16 @@ def _validate(path_id: str, schema: dict) -> list[str]:
     if not isinstance(schema, dict):
         errors.append("schema.json must be a JSON object")
         return errors
+    work = schema.get("work", {}) or {}
+    if not isinstance(work, dict):
+        errors.append("work must be a JSON object")
+    elif "action_timeout_seconds" in work:
+        try:
+            timeout = int(work["action_timeout_seconds"])
+            if not 30 <= timeout <= 3600:
+                errors.append("work.action_timeout_seconds must be between 30 and 3600")
+        except (TypeError, ValueError):
+            errors.append("work.action_timeout_seconds must be an integer")
     for a in schema.get("allowed_actions", []):
         if a not in VALID_ACTIONS:
             errors.append(f"unknown action '{a}' (known: {sorted(VALID_ACTIONS)})")

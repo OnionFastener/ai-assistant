@@ -60,11 +60,14 @@ class GitHubClient:
         return out
 
     def open_issues(self, limit: int = 50) -> list[dict]:
-        data = self._get(f"/repos/{self.repo}/issues", {"state": "open", "sort": "updated", "direction": "desc", "per_page": min(limit, 100)})
+        data = self._get("/search/issues", {
+            "q": f"repo:{self.repo} is:issue is:open",
+            "sort": "updated",
+            "order": "desc",
+            "per_page": min(limit, 100),
+        })
         out = []
-        for item in data:
-            if "pull_request" in item:
-                continue
+        for item in data.get("items", []):
             out.append({"key": f"GH:{self.repo}#{item.get('number')}", "project": self.repo, "repo": self.repo, "summary": item.get("title", ""), "description": item.get("body") or "", "issue_type": "GitHub issue", "status_name": item.get("state", "open"), "number": item.get("number"), "url": item.get("html_url", ""), "labels": [x.get("name", "") for x in item.get("labels", [])]})
         return out
 
