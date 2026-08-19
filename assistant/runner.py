@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from sqlalchemy import select
 from datetime import datetime, timezone
 
 from . import executor
 from .config import settings
 from .db import SessionLocal
 from .integrations import build_jira, configured_repos, search_context
-from .models import Action, ActionPlan, Link, Run, RunLog, Ticket
+from .models import Action, ActionPlan, Link, PatchWorker, Run, RunLog, Ticket
 from .paths import get_path, load_paths
 from .triage import build_ticket_context, run_triage
+from .schemas import TriageResult
 
 log = logging.getLogger("assistant.runner")
 
@@ -92,7 +94,7 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
         pending = (
             db.query(ActionPlan)
             .join(Ticket, ActionPlan.ticket_id == Ticket.id)
-            .filter(Ticket.key.in_(keys), ActionPlan.review_status == "pending")
+            .filter(Ticket.key.in_(keys), ActionPlan.review_status.in_(("pending", "preparing")))
             .all()
         )
         skipping = {p.ticket.key for p in pending}
@@ -198,42 +200,21 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
                 partial = True
                 _log(db, run_id, f"{row.key}: triage failed: {e}", level="error", key=row.key)
                 db.commit()
-    code_plans = []
     for row, result in triage_results:
         if _stop_requested(db, run, run_id):
             return
         path = get_path(paths, result.path_id)
-        if path and path.required_backend == "github":
-            code_plans.append((row, result, path))
-            continue
         try:
-            _make_plan(db, run_id, row, result, paths, triage_cfg)
+            if path and path.required_backend == "github" and not settings.mock:
+                _make_code_proposal(db, run_id, row, result, path)
+            else:
+                _make_plan(db, run_id, row, result, paths, triage_cfg)
         except Exception as e:  # noqa: BLE001
             row.stage = "failed"
             row.error = str(e)
             partial = True
             _log(db, run_id, f"{row.key}: plan failed: {e}", level="error", key=row.key)
             db.commit()
-    if code_plans:
-        _log(db, run_id, f"building {len(code_plans)} code plans with up to {min(PLAN_WORKERS, len(code_plans))} parallel agents")
-        for row, _, _ in code_plans:
-            _supersede_prior_pending(db, row.key)
-        with ThreadPoolExecutor(max_workers=min(PLAN_WORKERS, len(code_plans))) as pool:
-            planned = {
-                row.id: pool.submit(_build_code_plan, run_id, row, result, path, triage_cfg)
-                for row, result, path in code_plans
-            }
-            for row, result, path in code_plans:
-                if _stop_requested(db, run, run_id):
-                    return
-                try:
-                    _save_code_plan(db, run_id, row, result, planned[row.id].result())
-                except Exception as e:  # noqa: BLE001
-                    row.stage = "failed"
-                    row.error = str(e)
-                    partial = True
-                    _log(db, run_id, f"{row.key}: plan failed: {e}", level="error", key=row.key)
-                    db.commit()
     run.status = "partial" if partial else "completed"
     run.finished_at = datetime.now(timezone.utc)
     db.commit()
@@ -270,11 +251,85 @@ def _make_code_plan(db, run_id: int, row: Ticket, result, path, triage_cfg=None)
     _save_code_plan(db, run_id, row, result, plan_input)
 
 
-def _build_code_plan(run_id: int, row: Ticket, result, path, triage_cfg=None):
+def _feature_scope_review(summary: str, description: str, path_id: str) -> str:
+    if path_id != "new-feature":
+        return ""
+    text = f"{summary}\n{description}".lower()
+    acceptance = text.count("[ ]") + text.count("- [x]") + text.count("acceptance criteria")
+    surfaces = sum(term in text for term in ("api", "cli", "integration", "configuration", "documentation", "security", "migration", "dashboard"))
+    if acceptance >= 5 or (len(text) >= 1800 and surfaces >= 3):
+        return (f"Scope review required: this feature spans {max(acceptance, 1)} acceptance criteria and "
+                f"{surfaces} implementation surfaces. Confirm the scope before starting a patch preparation.")
+    return ""
+
+
+def _make_code_proposal(db, run_id: int, row: Ticket, result, path) -> None:
+    _supersede_prior_pending(db, row.key)
+    scope_review = _feature_scope_review(row.summary, row.description, result.path_id)
+    narrative = scope_review or result.reason or "Review the ticket and prepare a patch if you want to proceed."
+    plan = ActionPlan(ticket_id=row.id, run_id=run_id, path_id=result.path_id, summary=row.summary, narrative=narrative)
+    body = (f"AI scope review: {narrative}" if scope_review else
+            f"AI proposal: {narrative}\n\nSelect ‘Prepare patch’ to generate a reviewable diff.")
+    plan.actions.append(Action(seq=0, kind="comment", params={"body": body, "scope_review_required": bool(scope_review)}, preview="Scope confirmation required before patch preparation." if scope_review else "Proposal only — no patch has been generated."))
+    db.add(plan)
+    row.stage = "awaiting_approval"
+    db.commit()
+
+
+def prepare_patch(plan_id: int) -> None:
+    db = SessionLocal()
+    try:
+        proposal = db.get(ActionPlan, plan_id)
+        if not proposal or proposal.review_status != "preparing":
+            return
+        row = proposal.ticket
+        path = get_path(load_paths(settings.paths_dir), proposal.path_id)
+        if not path or path.required_backend != "github":
+            raise ValueError("This proposal does not require a code patch")
+        result = TriageResult(path_id=proposal.path_id, confidence=row.triage_confidence, reason=row.triage_reason, need_my_input=row.need_my_input)
+        def record_worker(pid: int, started: str) -> None:
+            worker = db.scalar(select(PatchWorker).where(PatchWorker.plan_id == plan_id))
+            if worker:
+                worker.pid = pid
+                worker.process_start = started
+                db.commit()
+
+        _log(db, proposal.run_id, f"{row.key}: patch preparation started", key=row.key)
+        plan_input = _build_code_plan(proposal.run_id, row, result, path, on_agent_started=record_worker)
+        db.refresh(proposal)
+        if proposal.review_status != "preparing":
+            return
+        _save_code_plan(db, proposal.run_id, row, result, plan_input)
+        proposal.review_status = "superseded"
+        proposal.error = "Patch prepared as a separate review plan."
+        db.commit()
+        _log(db, proposal.run_id, f"{row.key}: patch ready for review", key=row.key)
+    except Exception as e:  # noqa: BLE001
+        proposal = db.get(ActionPlan, plan_id)
+        if proposal:
+            detail = str(e)
+            proposal.review_status = "pending"
+            proposal.error = ("Patch preparation timed out while the agent was producing its final review plan. "
+                              "No patch was submitted; you can try again.") if "timeout_seconds=" in detail else (
+                              "Patch preparation failed before a reviewable patch was produced. See run diagnostics for details.")
+            db.commit()
+            _log(db, proposal.run_id, f"{proposal.ticket.key}: patch preparation failed: {detail}", level="error", key=proposal.ticket.key)
+    finally:
+        try:
+            worker = db.scalar(select(PatchWorker).where(PatchWorker.plan_id == plan_id))
+            if worker:
+                db.delete(worker)
+                db.commit()
+        except Exception:  # noqa: BLE001
+            pass
+        db.close()
+
+
+def _build_code_plan(run_id: int, row: Ticket, result, path, triage_cfg=None, on_agent_started=None):
     from .action_agent import run_for_ticket
 
     ctx = build_ticket_context(row.to_dict(), [l.to_dict() for l in row.links], triage_cfg)
-    return run_for_ticket(run_id, row.key, ctx, path, repo=row.repo)
+    return run_for_ticket(run_id, row.key, ctx, path, repo=row.repo, on_agent_started=on_agent_started)
 
 
 def _save_code_plan(db, run_id: int, row: Ticket, result, plan_input) -> None:

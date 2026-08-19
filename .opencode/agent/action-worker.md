@@ -8,7 +8,17 @@ permission:
     git *: allow
     pytest *: allow
     python *: allow
-    npm *: ask
+    ls *: allow
+    rg *: allow
+    find *: allow
+    sed *: allow
+    cat *: allow
+    head *: allow
+    tail *: allow
+    wc *: allow
+    pwd: allow
+    npm test*: allow
+    npm run test*: allow
     "*": ask
 """
 
@@ -28,13 +38,6 @@ Your workflow:
    assignee. Be concrete; quote evidence.
 5. NEVER push, never open PRs, never comment — leave those as proposals.
 
-Emit EXACTLY one JSON object, no markdown fences, no prose, with this shape:
-{"summary": string (short),
- "narrative": string (what you did / why, for the reviewer),
- "actions": [
-   {"kind": string from allowed_actions,
-    "params": {...},        // e.g. {"body": "..."}, {"to": "In Review"}, {"assignee": "x"}
-    "preview": string}      // human-readable description of what this action will do
- ]}
-
-Quality bar: every params value must be complete and ready to execute verbatim on approval.
+Finish with a concise plain-text handoff for the reviewer: changed files, root cause or
+implementation note, and focused tests run (or why none could run). Do not emit JSON and do
+not draft Jira/GitHub actions; the application creates those deterministically from the diff.

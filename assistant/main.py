@@ -15,10 +15,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import auth, executor, runner, scheduler
+from . import auth, executor, runner, scheduler, opencode_runner
 from .config import settings
 from .db import SessionLocal, get_session, init_db
-from .models import Action, ActionPlan, Run, Ticket
+from .models import Action, ActionPlan, PatchWorker, Run, RunLog, Ticket
 from .paths import VALID_ACTIONS, get_path, load_paths
 from .schemas import (ConfigIn, EditPlanIn, LoginIn, ManualRunIn, PathIn)
 from .triage_config import load_triage_config, save_triage_config
@@ -135,6 +135,9 @@ def run_detail(run_id: int, request: Request, db: Session = Depends(get_session)
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "tickets": [t.to_dict(include="full") for t in run.tickets],
+        "logs": [{"ts": entry.ts.isoformat() if entry.ts else None, "level": entry.level,
+                  "ticket_key": entry.ticket_key, "message": entry.message}
+                 for entry in db.execute(select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.id)).scalars()],
     }
 
 
@@ -151,14 +154,20 @@ def run_tickets(run_id: int, request: Request, db: Session = Depends(get_session
 def list_approvals(request: Request, db: Session = Depends(get_session)):
     _require_user(request)
     plans = db.execute(
-        select(ActionPlan).where(ActionPlan.review_status == "pending")
+        select(ActionPlan).where(ActionPlan.review_status.in_(("pending", "preparing")))
         .order_by(ActionPlan.id.desc())
     ).scalars().all()
+    paths = {path.id: path for path in load_paths(settings.paths_dir)}
     out = []
     for p in plans:
         t = p.ticket
+        plan_data = p.to_dict()
+        path = paths.get(p.path_id)
+        plan_data["is_code_proposal"] = bool(path and path.required_backend == "github" and not any(a.kind in ("push_branch", "create_pr") for a in p.actions))
+        plan_data["patch_preparation_failed"] = bool(plan_data["is_code_proposal"] and p.error.startswith("Patch preparation"))
+        plan_data["scope_review_required"] = any(a.params.get("scope_review_required") for a in p.actions)
         out.append({
-            "plan": p.to_dict(),
+            "plan": plan_data,
             "ticket": {
                 "id": t.id, "key": t.key, "summary": t.summary, "status_name": t.status_name,
                 "triage_reason": t.triage_reason, "triage_confidence": t.triage_confidence,
@@ -195,10 +204,80 @@ def approve(plan_id: int, db: Session = Depends(get_session)):
         raise HTTPException(404, "Plan not found")
     if plan.review_status not in ("pending",):
         raise HTTPException(409, f"Plan already {plan.review_status}")
+    path = get_path(load_paths(settings.paths_dir), plan.path_id)
+    if path and path.required_backend == "github" and not any(a.kind in ("push_branch", "create_pr") for a in plan.actions):
+        raise HTTPException(409, "Prepare a patch before approving this code proposal")
     plan.review_status = "approved"
     plan.approved_at = datetime.now(timezone.utc)
     db.commit()
     threading.Thread(target=_execute_approved, args=(plan_id,), daemon=True).start()
+    return {"ok": True, "plan_id": plan_id}
+
+
+@app.post("/api/approvals/{plan_id}/prepare-patch", dependencies=[_require_mutation])
+def start_patch_preparation(plan_id: int, db: Session = Depends(get_session)):
+    plan = db.get(ActionPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+    path = get_path(load_paths(settings.paths_dir), plan.path_id)
+    if not path or path.required_backend != "github":
+        raise HTTPException(409, "This plan does not support patch preparation")
+    if plan.review_status != "pending":
+        raise HTTPException(409, f"Plan already {plan.review_status}")
+    if any(a.kind in ("push_branch", "create_pr") for a in plan.actions):
+        raise HTTPException(409, "Patch is already ready for review")
+    if any(a.params.get("scope_review_required") for a in plan.actions):
+        raise HTTPException(409, "Confirm the feature scope before preparing a patch")
+    worker = db.scalar(select(PatchWorker).where(PatchWorker.ticket_key == plan.ticket.key))
+    if worker and opencode_runner.process_running(worker.pid, worker.process_start):
+        raise HTTPException(409, "A patch is already being prepared for this ticket")
+    if worker:
+        db.delete(worker)
+    active_plan = db.scalar(
+        select(ActionPlan).join(Ticket, ActionPlan.ticket_id == Ticket.id).where(
+            Ticket.key == plan.ticket.key, ActionPlan.review_status == "preparing", ActionPlan.id != plan.id
+        )
+    )
+    if active_plan:
+        raise HTTPException(409, "A patch is already being prepared for this ticket")
+    plan.review_status = "preparing"
+    plan.error = "Preparing a reviewable patch…"
+    db.add(PatchWorker(ticket_key=plan.ticket.key, plan_id=plan.id,
+                       cwd=str(settings.workspace / f"run-{plan.run_id}" / plan.ticket.key / "repo")))
+    db.commit()
+    threading.Thread(target=runner.prepare_patch, args=(plan_id,), daemon=True).start()
+    return {"ok": True, "plan_id": plan_id, "status": "preparing"}
+
+
+@app.post("/api/approvals/{plan_id}/confirm-scope", dependencies=[_require_mutation])
+def confirm_scope(plan_id: int, db: Session = Depends(get_session)):
+    plan = db.get(ActionPlan, plan_id)
+    if not plan or plan.review_status != "pending":
+        raise HTTPException(409, "Scope review is not available")
+    marked = [a for a in plan.actions if a.params.get("scope_review_required")]
+    if not marked:
+        raise HTTPException(409, "This proposal does not need scope confirmation")
+    for action in marked:
+        action.params = {k: v for k, v in action.params.items() if k != "scope_review_required"}
+        action.preview = "Scope confirmed — patch preparation is available."
+    db.commit()
+    return {"ok": True, "plan_id": plan_id}
+
+
+@app.post("/api/approvals/{plan_id}/cancel-patch", dependencies=[_require_mutation])
+def cancel_patch_preparation(plan_id: int, db: Session = Depends(get_session)):
+    plan = db.get(ActionPlan, plan_id)
+    if not plan or plan.review_status != "preparing":
+        raise HTTPException(409, "Patch preparation is not active")
+    cwd = settings.workspace / f"run-{plan.run_id}" / plan.ticket.key / "repo"
+    worker = db.scalar(select(PatchWorker).where(PatchWorker.plan_id == plan.id))
+    cancelled = opencode_runner.cancel_agent(cwd)
+    if worker:
+        worker.cancel_requested = True
+        cancelled = opencode_runner.terminate_process(worker.pid, worker.process_start) or cancelled
+    plan.review_status = "pending"
+    plan.error = "Patch preparation cancellation requested." if cancelled else "Patch preparation was no longer running."
+    db.commit()
     return {"ok": True, "plan_id": plan_id}
 
 

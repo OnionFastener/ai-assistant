@@ -6,6 +6,8 @@ from assistant.action_agent import (
     _mock_fix,
     _normalize_plan,
     _parse_plan_json,
+    _code_plan_from_agent_summary,
+    _repo_preflight,
     run_for_ticket,
 )
 from assistant.config import settings
@@ -131,3 +133,28 @@ def _fixed_repo(tmp_path):
     src = clone / "service.py"
     src.write_text(src.read_text().replace("shipping=0.0):", "shipping=0.0):\n    # guard\n"))
     return clone
+
+def test_code_plan_from_agent_summary_is_deterministic():
+    plan = _code_plan_from_agent_summary(
+        {"key": "GH:owner/repo#7", "summary": "Fix retry timeout"},
+        "Changed assistant/action_agent.py.\nTests: pytest tests/test_action_agent.py.",
+    )
+    assert plan["summary"] == "Fix retry timeout"
+    assert [a["kind"] for a in plan["actions"]] == ["comment", "push_branch", "create_pr"]
+    assert "Changed assistant/action_agent.py" in plan["narrative"]
+
+
+def test_repo_preflight_surfaces_existing_ticket_files_and_test_hint(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    (tmp_path / "assistant").mkdir()
+    (tmp_path / "assistant" / "runner.py").write_text("pass\n")
+    preflight = _repo_preflight(tmp_path, {"summary": "Fix runner", "description": "See `assistant/runner.py`."})
+    assert "pytest <relevant-test-file-or-node>" in preflight
+    assert "assistant/runner.py" in preflight
+
+
+def test_feature_scope_gate_flags_large_multi_surface_feature():
+    from assistant.runner import _feature_scope_review
+    description = "## Acceptance criteria\n" + "\n".join("- [ ] requirement" for _ in range(6)) + "\nAPI CLI integration configuration documentation security"
+    assert _feature_scope_review("Add platform", description, "new-feature")
+    assert not _feature_scope_review("Fix crash", description, "bug-fix")

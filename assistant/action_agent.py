@@ -12,6 +12,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from collections.abc import Callable
 
 from pydantic import ValidationError
 
@@ -23,10 +24,11 @@ from .schemas import ActionPlanInput
 log = logging.getLogger("assistant.action_agent")
 
 DEFAULT_ACTION_TIMEOUT = 300
-ACTION_RETRY_TIMEOUT = 60
+ACTION_RETRY_TIMEOUT = 45
+MAX_PLAN_FORMAT_RETRIES = 1
 
 
-def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: str = "") -> ActionPlanInput:
+def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: str = "", on_agent_started: Callable[[int, str], None] | None = None) -> ActionPlanInput:
     """Main entry. Returns a full action plan (mock or real)."""
     from .action_config import load_action_config
 
@@ -39,11 +41,12 @@ def run_for_ticket(run_id: int, ticket_key: str, ticket_ctx: dict, path, repo: s
         plan_json = _mock_fix(run_id, ticket_key, ticket_ctx, workspace_root, sandbox)
     else:
         wrapper = load_action_config().instruct or ""
-        prompt = _build_prompt(ticket_ctx, behavior, allowed, wrapper)
+        preflight = _repo_preflight(sandbox, ticket_ctx)
+        prompt = _build_prompt(ticket_ctx, behavior, allowed, wrapper, preflight)
         timeout = _action_timeout(path)
         text = op.run_agent(prompt, agent="action-worker", cwd=str(sandbox),
-                            model=settings.model_action, timeout=timeout)
-        plan_json = _parse_json_retry(text, prompt, "action-worker", sandbox)
+                            model=settings.model_action, timeout=timeout, on_started=on_agent_started)
+        plan_json = _code_plan_from_agent_summary(ticket_ctx, text)
 
     plan = _normalize_plan(plan_json, run_id, ticket_key, sandbox, github_repo=repo)
     return plan
@@ -67,7 +70,7 @@ def prepare_sandbox(run_id: int, ticket_key: str, workspace_root: Path, repo: st
             gitutil.setup_mock_repo(remote_root, gitutil.remote_name(repo))
             gitutil.clone_local(remote_root / f"{gitutil.remote_name(repo)}.git", repo_dir)
         else:
-            gitutil.clone_repo(settings, repo_dir, repo=repo or None)
+            gitutil.clone_cached_repo(settings, workspace_root / "_repo_cache", repo_dir, repo=repo or None)
         (ticket_dir / "context.json").write_text(
             json.dumps({"key": ticket_key, "repo": repo}, indent=2))
     except Exception as e:  # noqa: BLE001
@@ -75,28 +78,69 @@ def prepare_sandbox(run_id: int, ticket_key: str, workspace_root: Path, repo: st
     return repo_dir
 
 
-def _build_prompt(ticket_ctx: dict, behavior: str, allowed: str, wrapper: str = "") -> str:
+def _repo_preflight(repo: Path, ticket_ctx: dict) -> str:
+    manifests = [name for name in ("pyproject.toml", "pytest.ini", "package.json", "go.mod", "Cargo.toml", "Makefile") if (repo / name).exists()]
+    test_hint = ""
+    if "pyproject.toml" in manifests or "pytest.ini" in manifests:
+        test_hint = "pytest <relevant-test-file-or-node>"
+    elif "package.json" in manifests:
+        test_hint = "npm test -- <relevant-test-file-or-pattern>"
+    elif "go.mod" in manifests:
+        test_hint = "go test ./<relevant-package>"
+    elif "Cargo.toml" in manifests:
+        test_hint = "cargo test <relevant-test-name>"
+
+    text = "\n".join(str(ticket_ctx.get(field) or "") for field in ("summary", "description"))
+    candidates = re.findall(r"(?<![\w-])([A-Za-z0-9_./-]+\.(?:py|js|ts|tsx|go|rs|java|rb|php|cs|json|toml|ya?ml|md))(?![\w-])", text)
+    referenced = []
+    for candidate in candidates:
+        candidate = candidate.lstrip("./")
+        if candidate and (repo / candidate).is_file() and candidate not in referenced:
+            referenced.append(candidate)
+    lines = ["REPOSITORY PREFLIGHT (already checked):", f"- manifests: {', '.join(manifests) or 'none detected'}"]
+    if test_hint:
+        lines.append(f"- likely focused test command: {test_hint}")
+    if referenced:
+        lines.append(f"- ticket-referenced files present: {', '.join(referenced[:12])}")
+    return "\n".join(lines)
+
+
+def _build_prompt(ticket_ctx: dict, behavior: str, allowed: str, wrapper: str = "", preflight: str = "") -> str:
     return (
         (wrapper + "\n\n" if wrapper else "") +
         "You are routed a Jira ticket for the path whose instructions follow.\n\n"
         f"PATH BEHAVIOR (behavior.md / instruct.md):\n{behavior}\n\n"
         f"Your allowed_actions: [{allowed}]\n\n"
-        "TICKET CONTEXT (JSON):\n" + json.dumps(ticket_ctx, ensure_ascii=False, default=str) +
-        "\n\nYou are in the repository sandbox. REPRODUCE the issue, make the minimal fix, add/"
-        "adjust a regression test, and run the relevant tests. Leave your changes in the working "
-        "tree (do NOT commit, push, or open a PR — those happen only after human approval).\n\n"
-        "Emit EXACTLY one JSON object, no markdown fences, no prose, no narration, no planning "
-        "commentary. Do a final sentence like 'here is the plan' only if unavoidable — the JSON "
-        "is the LAST text in your response and is parseable on its own:\n"
-        '{"summary": string, "narrative": string, "actions": ['
-        '{"kind": string, "params": {object}, "preview": string}]}\n'
-        "For a bug fix include actions: comment (body), push_branch (base, branch_name like "
-        "'fix/<key-slug>', commit_msg), create_pr (title, body, target_branch), and optionally "
-        "transition (to) / assign (assignee). Every params value must be complete and final."
+        + (preflight + "\n\n" if preflight else "")
+        + "TICKET CONTEXT (JSON):\n" + json.dumps(ticket_ctx, ensure_ascii=False, default=str) +
+        "\n\nWork efficiently: inspect the repository root and the files named or implied by the "
+        "ticket first. Do not install dependencies, start services, use the network, or run a full "
+        "test suite. Run at most two focused tests that cover the changed behavior. If no focused "
+        "test can run, state why in the narrative.\n\nYou are in the repository sandbox. REPRODUCE "
+        "the issue, make the minimal fix, add/adjust a regression test, and run the relevant tests. "
+        "Leave your changes in the working tree (do NOT commit, push, or open a PR — those happen "
+        "only after human approval).\n\n"
+        "Finish with a concise plain-text handoff for the reviewer: changed files, root cause or "
+        "implementation note, and focused tests run (or why none could run). Do not emit JSON and "
+        "do not propose actions; the application builds the review plan deterministically from the diff."
     )
 
 
-def _parse_json_retry(text: str, prompt: str, agent: str, cwd: Path) -> dict:
+def _code_plan_from_agent_summary(ticket_ctx: dict, text: str) -> dict:
+    summary = str(ticket_ctx.get("summary") or ticket_ctx.get("key") or "Prepare requested change").strip()
+    narrative = (text or "The agent completed its implementation pass; review the captured diff and run verification before approval.").strip()[:6000]
+    return {
+        "summary": summary,
+        "narrative": narrative,
+        "actions": [
+            {"kind": "comment", "params": {"body": f"AI patch prepared for review.\n\n{narrative}"}, "preview": ""},
+            {"kind": "push_branch", "params": {"commit_msg": summary}, "preview": ""},
+            {"kind": "create_pr", "params": {"title": summary, "body": narrative}, "preview": ""},
+        ],
+    }
+
+
+def _parse_json_retry(text: str, prompt: str, agent: str, cwd: Path, on_agent_started: Callable[[int, str], None] | None = None) -> dict:
     data = _parse_plan_json(text)
     if data is not None:
         return data
@@ -106,9 +150,10 @@ def _parse_json_retry(text: str, prompt: str, agent: str, cwd: Path) -> dict:
         '{"summary": string, "narrative": string, "actions": ['
         '{"kind": string, "params": {object}, "preview": string}]}.'
     )
-    for _ in range(3):
+    for _ in range(MAX_PLAN_FORMAT_RETRIES):
         text2 = op.run_agent(f"{contract}\n\n{prompt}", agent=agent, cwd=str(cwd),
-                             model=settings.model_action, timeout=ACTION_RETRY_TIMEOUT)
+                             model=settings.model_action, timeout=ACTION_RETRY_TIMEOUT,
+                             on_started=on_agent_started)
         data = _parse_plan_json(text2)
         if data is not None:
             return data

@@ -147,6 +147,19 @@ class ActionPlan(Base):
         }
 
 
+class PatchWorker(Base):
+    __tablename__ = "patch_workers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_key: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("action_plans.id"), unique=True)
+    cwd: Mapped[str] = mapped_column(Text, default="")
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    process_start: Mapped[str] = mapped_column(String(40), default="")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class Action(Base):
     __tablename__ = "actions"
 

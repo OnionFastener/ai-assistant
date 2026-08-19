@@ -128,3 +128,29 @@ def test_push_branch_reaches_remote(mock_remote, tmp_path):
 
     refs = gitutil.run_git(tmp_path, "ls-remote", str(mock_remote), "refs/heads/*")
     assert "refs/heads/fix/demo-1" in refs
+
+def test_clone_cached_repo_refreshes_mirror_and_isolates_sandbox(mock_remote, tmp_path, monkeypatch):
+    class Settings:
+        github_repo = "owner/demo-repo"
+        github_token = ""
+        github_host = "github.com"
+        github_ssh_url = ""
+
+    monkeypatch.setattr(gitutil, "repo_url", lambda settings, token="", repo=None: str(mock_remote))
+    cache_root = tmp_path / "cache"
+    first = tmp_path / "first"
+    gitutil.clone_cached_repo(Settings(), cache_root, first, "owner/demo-repo")
+    assert (first / "service.py").exists()
+    assert (cache_root / next(cache_root.iterdir()).name / "HEAD").exists()
+
+    seed = tmp_path / "seed-update"
+    gitutil.clone_local(mock_remote, seed)
+    (seed / "cached.txt").write_text("fresh\n")
+    gitutil.run_git(seed, "add", "cached.txt")
+    gitutil.run_git(seed, "commit", "-m", "cache update")
+    gitutil.run_git(seed, "push")
+    second = tmp_path / "second"
+    gitutil.clone_cached_repo(Settings(), cache_root, second, "owner/demo-repo")
+    assert (second / "cached.txt").read_text() == "fresh\n"
+    (second / "service.py").write_text("changed\n")
+    assert (first / "service.py").read_text() != "changed\n"

@@ -83,6 +83,13 @@ class _FakeProc:
         self.stdout = stdout
         self.stderr = "some stderr"
         self.returncode = returncode
+        self.pid = 12345
+
+    def communicate(self, timeout=None):
+        return self.stdout, self.stderr
+
+    def poll(self):
+        return self.returncode
 
 
 def test_run_agent_returns_flag_stripped_text(monkeypatch, tmp_path):
@@ -93,7 +100,7 @@ def test_run_agent_returns_flag_stripped_text(monkeypatch, tmp_path):
                "part": {"type": "text", "text": f"```json\n{body}```"}}),
     ])
     monkeypatch.setattr(op.shutil, "which", lambda name: "/fake/bin/opencode")
-    monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _FakeProc(stdout))
+    monkeypatch.setattr(op.subprocess, "Popen", lambda *a, **k: _FakeProc(stdout))
     result = op.run_agent("triage me", agent="triage", cwd=str(tmp_path))
     assert result.startswith("{")
     assert result.endswith("}")
@@ -108,6 +115,6 @@ def test_run_agent_raises_when_binary_missing(monkeypatch, tmp_path):
 
 def test_run_agent_raises_on_bad_exit_with_no_stdout(monkeypatch, tmp_path):
     monkeypatch.setattr(op.shutil, "which", lambda name: "/fake/bin/opencode")
-    monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _FakeProc("", returncode=1))
+    monkeypatch.setattr(op.subprocess, "Popen", lambda *a, **k: _FakeProc("", returncode=1))
     with pytest.raises(RuntimeError, match="exited 1"):
         op.run_agent("hi", agent="triage", cwd=str(tmp_path))

@@ -4,13 +4,53 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
+import threading
 import re
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 
 log = logging.getLogger("assistant.opencode")
 
 FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$")
+ACTIVE: dict[str, subprocess.Popen] = {}
+ACTIVE_LOCK = threading.Lock()
+
+def cancel_agent(cwd: str | os.PathLike) -> bool:
+    with ACTIVE_LOCK:
+        proc = ACTIVE.get(str(cwd))
+    return bool(proc and proc.poll() is None and terminate_process(proc.pid))
+
+
+def process_start(pid: int) -> str:
+    try:
+        return open(f"/proc/{pid}/stat").read().split(") ", 1)[1].split()[19]
+    except (FileNotFoundError, IndexError, OSError):
+        return ""
+
+
+def process_running(pid: int | None, started: str = "") -> bool:
+    if not pid or not os.path.exists(f"/proc/{pid}"):
+        return False
+    return not started or process_start(pid) == started
+
+
+def terminate_process(pid: int | None, started: str = "") -> bool:
+    if not process_running(pid, started):
+        return False
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _tail(value: str | bytes | None, limit: int = 1600) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return (value or "").strip()[-limit:].replace("\x00", "")
 
 
 def run_agent(
@@ -21,6 +61,7 @@ def run_agent(
     model: str = "",
     timeout: int = 900,
     extra_env: dict | None = None,
+    on_started: Callable[[int, str], None] | None = None,
 ) -> str:
     """Run one opencode agent step; return the final assistant text (stripped)."""
     exe = shutil.which("opencode")
@@ -33,13 +74,26 @@ def run_agent(
 
     env = dict(os.environ)
     env.update(extra_env or {})
-    log.debug("opencode: %s %s", agent, cwd)
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=str(cwd)
-    )
-    if proc.returncode != 0 and not proc.stdout.strip():
-        raise RuntimeError(f"opencode exited {proc.returncode}: {proc.stderr[:500]}")
-    text = extract_text(proc.stdout) or proc.stdout
+    started = time.monotonic()
+    log.info("event=agent.start agent=%s cwd=%s timeout_seconds=%s model=%s", agent, cwd, timeout, model or "default")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=str(cwd), start_new_session=True)
+        with ACTIVE_LOCK: ACTIVE[str(cwd)] = proc
+        if on_started:
+            on_started(proc.pid, process_start(proc.pid))
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGTERM); stdout, stderr = proc.communicate()
+        elapsed = round(time.monotonic() - started, 3)
+        raise RuntimeError(f"agent={agent} timeout_seconds={timeout} elapsed_seconds={elapsed} stdout_tail={_tail(stdout)!r} stderr_tail={_tail(stderr)!r}") from None
+    finally:
+        with ACTIVE_LOCK: ACTIVE.pop(str(cwd), None)
+    elapsed = round(time.monotonic() - started, 3)
+    proc.stdout, proc.stderr = stdout, stderr
+    log.info("event=agent.finish agent=%s elapsed_seconds=%s exit_code=%s stdout_bytes=%s stderr_bytes=%s", agent, elapsed, proc.returncode, len(stdout), len(stderr))
+    if proc.returncode != 0 and not stdout.strip():
+        raise RuntimeError(f"opencode exited {proc.returncode}: {stderr[:500]}")
+    text = extract_text(stdout) or stdout
     return FENCE_RE.sub("", text or "").strip()
 
 

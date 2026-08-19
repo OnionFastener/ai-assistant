@@ -10,9 +10,13 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 log = logging.getLogger("assistant.gitutil")
+
+CACHE_LOCKS: dict[str, threading.Lock] = {}
+CACHE_LOCKS_GUARD = threading.Lock()
 
 GIT_ENV = {
     "GIT_TERMINAL_PROMPT": "0",
@@ -63,6 +67,33 @@ def clone_repo(settings, dest: Path, repo: str | None = None) -> Path:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     run_git(dest.parent, "clone", "--depth", "1", repo_url(settings, repo=repo), str(dest))
+    return dest
+
+
+def _cache_lock(path: Path) -> threading.Lock:
+    with CACHE_LOCKS_GUARD:
+        return CACHE_LOCKS.setdefault(str(path), threading.Lock())
+
+
+def clone_cached_repo(settings, cache_root: Path, dest: Path, repo: str | None = None) -> Path:
+    """Refresh a private bare mirror, then create an isolated local sandbox clone."""
+    identity = (repo or settings.github_repo or "default").strip().lower()
+    cache = Path(cache_root) / f"{hashlib.sha256(identity.encode()).hexdigest()[:20]}.git"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    source = repo_url(settings, repo=repo)
+    public_source = repo_url(settings, token="", repo=repo)
+    with _cache_lock(cache):
+        if not cache.exists():
+            run_git(cache.parent, "clone", "--mirror", source, str(cache))
+            run_git(cache, "remote", "set-url", "origin", public_source)
+        else:
+            try:
+                run_git(cache, "-c", f"remote.origin.url={source}", "fetch", "--prune", "origin")
+            except GitError:
+                log.warning("using existing repository cache after refresh failed: %s", cache.name)
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run_git(dest.parent, "clone", "--no-hardlinks", "--depth", "1", str(cache), str(dest))
     return dest
 
 

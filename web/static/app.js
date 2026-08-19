@@ -212,11 +212,16 @@ function planCard(it) {
     <div class="head">
       <h3>${esc(t.key)} · ${esc(t.summary)}</h3>
       <span class="chip">${esc(p.path_id)}</span>
+      ${p.review_status === "preparing" ? '<span class="chip warn">preparing patch</span>' : ""}
+      ${p.patch_preparation_failed ? '<span class="chip err">patch prep timed out</span>' : ""}
+      ${p.scope_review_required ? '<span class="chip warn">scope review required</span>' : ""}
       ${t.repo ? `<span class="chip">${esc(t.repo)}</span>` : ""}
       <span class="chip warn">conf ${(t.triage_confidence * 100).toFixed(0)}%</span>
       ${t.need_my_input ? '<span class="chip err">needs your input</span>' : ""}
     </div>
     <div class="summary small muted">${esc(t.triage_reason)}</div>
+    ${p.patch_preparation_failed ? `<div class="plan-error"><div class="plan-error-icon">!</div><div><strong>Patch preparation timed out</strong><span>${esc(p.error)}</span><a href="#/run/${p.run_id}">View diagnostics →</a></div></div>` : ""}
+    ${p.scope_review_required ? `<div class="scope-review"><strong>Review scope before spending agent time.</strong><span>${esc(p.narrative)}</span></div>` : ""}
     <div class="small muted" style="margin-top:6px">${linkList(t.links)}</div>
     <details style="margin-top:6px"><summary>narrative</summary>
       <pre class="diff">${esc(p.narrative)}</pre></details>
@@ -225,14 +230,21 @@ function planCard(it) {
       <tbody>${rows}</tbody>
     </table>
     <div class="actions">
-      <button class="ok" data-approve="${p.id}">Approve &amp; execute</button>
-      <button class="ghost" data-reject="${p.id}">Reject</button>
-      <button class="ghost" data-save="${p.id}">Save edits</button>
+      ${p.review_status === "preparing" ? `<button class="warn" data-cancel-patch="${p.id}">Cancel patch preparation</button>` : p.scope_review_required ? `<button class="warn" data-confirm-scope="${p.id}">Confirm scope</button>` : p.is_code_proposal ? `<button class="ok" data-prepare="${p.id}">${p.patch_preparation_failed ? "Retry patch preparation" : "Prepare patch"}</button>` : `<button class="ok" data-approve="${p.id}">Approve &amp; execute</button>`}
+      ${p.review_status === "preparing" ? "" : `<button class="ghost" data-reject="${p.id}">Reject</button><button class="ghost" data-save="${p.id}">Save edits</button>`}
     </div>
   </div>`;
 }
 
 function wirePlans() {
+  document.querySelectorAll("[data-confirm-scope]").forEach(b => b.addEventListener("click", async () => { try { await api(`/api/approvals/${b.dataset.confirmScope}/confirm-scope`, { method: "POST" }); toast("Scope confirmed — patch preparation is now available"); renderApprovals($("#app")); } catch (e) { toast(e.message); } }));
+  document.querySelectorAll("[data-cancel-patch]").forEach(b => b.addEventListener("click", async () => { try { await api(`/api/approvals/${b.dataset.cancelPatch}/cancel-patch`, { method: "POST" }); toast("Patch preparation cancelled"); renderApprovals($("#app")); } catch (e) { toast(e.message); } }));
+  document.querySelectorAll("[data-prepare]").forEach(b => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try { await api(`/api/approvals/${b.dataset.prepare}/prepare-patch`, { method: "POST" }); toast("Preparing patch — the proposal will return as a diff review."); }
+    catch (e) { toast(e.message); b.disabled = false; }
+    renderApprovals($("#app"));
+  }));
   document.querySelectorAll("[data-approve]").forEach(b => b.addEventListener("click", async () => {
     try { await api(`/api/approvals/${b.dataset.approve}/approve`, { method: "POST" }); } catch (e) { toast(e.message); }
     renderApprovals($("#app"));
@@ -308,6 +320,12 @@ async function renderRunDetail(app, id) {
           ${p.actions.map(a => `<pre class="diff">${esc(a.kind)}: ${esc(a.exec_status)} — ${esc(a.exec_result || a.preview || "")}</pre>`).join("")}
         `).join("")}
       </div>`);
+    }
+    if (run.logs?.length) {
+      const diagnostics = run.logs.map((log) =>
+        `${fmt(log.ts)} [${log.level}]${log.ticket_key ? ` ${log.ticket_key}` : ""} — ${log.message}`
+      ).join("\n");
+      app.insertAdjacentHTML("beforeend", `<details class="panel"><summary>Run diagnostics (${run.logs.length} events)</summary><pre class="diff">${esc(diagnostics)}</pre></details>`);
     }
   } catch (e) { app.innerHTML = `<div class="panel">Error: ${esc(e.message)}</div>`; }
 }

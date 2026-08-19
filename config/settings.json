@@ -46,7 +46,7 @@
   },
   "models": {
     "triage": "",
-    "action": ""
+    "action": "opencode/gpt-5.3-codex-spark"
   },
   "run": {
     "max_tickets_per_run": 5
