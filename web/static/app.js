@@ -1,6 +1,7 @@
 "use strict";
 
 const state = { csrf: null, token: null };
+const apiBase = location.pathname === "/" ? "" : location.pathname.replace(/\/$/, "");
 
 // ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
@@ -24,9 +25,7 @@ async function api(path, { method = "GET", body } = {}) {
   } else if (method !== "GET") {
     opts.headers["X-CSRF"] = state.csrf || "";
   }
-  const url = path.startsWith("/api/")
-    ? "/project2" + path
-    : path;
+  const url = path.startsWith("/api/") ? apiBase + path : path;
   const res = await fetch(url, opts);
   if (res.status === 401) { setChrome(false); location.hash = "#/login"; throw new Error("Not authenticated"); }
   const data = await res.json().catch(() => ({}));
