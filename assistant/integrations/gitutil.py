@@ -128,7 +128,9 @@ def patch_sha(patch: str) -> str:
     return hashlib.sha256(patch.encode()).hexdigest()
 
 
-def apply_patch(dest: Path, patch: str) -> None:
+def apply_patch(dest: Path, patch: str, expected_sha: str = "") -> None:
+    if expected_sha and patch_sha(patch) != expected_sha:
+        raise GitError("patch hash does not match the approved patch")
     pf = dest.parent / "pending.patch"
     pf.write_text(patch)
     try:

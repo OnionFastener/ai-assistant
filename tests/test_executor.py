@@ -58,7 +58,7 @@ def _mock_remote(ctx, run_id, repo):
 def test_comment_with_empty_body_fails(plan_factory, ctx):
     plan = plan_factory(actions=[("comment", {"body": "   "})])
     status, _ = execute_plan(ctx, plan, {"comment"})
-    assert status == "executed"  # comment failure is non-critical
+    assert status == "failed"
     assert plan.actions[0].exec_status == "failed"
     assert "non-empty" in plan.actions[0].exec_result
 
@@ -156,9 +156,11 @@ def _push_plan_with_patch(ctx, plan_factory, repo, tamper=False):
                          "patch": "", "repo": repo}),
     ])
     patch = _patch_for_run(ctx, plan.run_id, repo)
+    expected_sha = gitutil.patch_sha(patch)
     if tamper:
         patch = patch.replace("# guard", "# MALICIOUS")
     plan.actions[0].params["patch"] = patch
+    plan.actions[0].params["patch_sha"] = expected_sha
     db = SessionLocal()
     db.commit()
     db.close()
@@ -181,7 +183,7 @@ def test_tampered_patch_hash_rejected_and_critical(ctx, plan_factory):
     status, _ = execute_plan(ctx, plan, {"push_branch"})
     assert status == "failed"
     assert plan.actions[0].exec_status == "failed"
-    assert "patch verification failed" in plan.actions[0].exec_result
+    assert "patch hash does not match" in plan.actions[0].exec_result
 
 
 def test_create_pr_requires_pushed_branch(ctx, plan_factory):
@@ -225,7 +227,6 @@ def test_preview_action_shapes():
         f"Push branch 'fix/x' (commit: m)\n\ndiff..."
     assert preview_action("create_pr", {"title": "T", "head": "h", "target_branch": "m", "body": "b"}) == \
         "PR: T (h → m)\n\nb"
-    assert preview_action("edit_ticket", {"field": "labels"}) == "edit_ticket: {'field': 'labels'}"
 
 
 def test_session_cleanup_outside_tx(plan_factory, ctx):

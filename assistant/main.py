@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from . import auth, executor, runner, scheduler, opencode_runner
 from .config import settings
 from .db import SessionLocal, get_session, init_db
+from .integrations import gitutil
 from .models import Action, ActionPlan, PatchWorker, Run, RunLog, Ticket
 from .paths import VALID_ACTIONS, get_path, load_paths
 from .schemas import (ConfigIn, EditPlanIn, LoginIn, ManualRunIn, PathIn)
@@ -31,6 +32,8 @@ WEB_DIR = Path(settings.settings_path).resolve().parent.parent / "web" / "static
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not settings.mock and settings.admin_password == "change-me":
+        raise RuntimeError("Set ASST_ADMIN_PASSWORD to a non-default value before starting live mode")
     init_db()
     scheduler.start_scheduler()
     log.info("assistant up (mock=%s)", settings.mock)
@@ -44,9 +47,14 @@ app = FastAPI(title="AI Assistant", lifespan=lifespan)
 # ---------- auth ----------
 
 @app.post("/api/login", include_in_schema=False)
-def login(payload: LoginIn):
+def login(payload: LoginIn, request: Request):
+    client = request.client.host if request.client else "unknown"
+    if not auth.login_allowed(client):
+        raise HTTPException(status_code=429, detail="Too many login attempts; try again later")
     if not auth.verify_password(payload.password):
+        auth.record_login_failure(client)
         raise HTTPException(status_code=401, detail="Wrong password")
+    auth.clear_login_failures(client)
     token = auth.create_session()
     response = JSONResponse({"ok": True, "csrf": auth.csrf_token_from_session(token)})
     auth.set_session_cookie(response, token)
@@ -55,6 +63,8 @@ def login(payload: LoginIn):
 
 @app.post("/api/logout")
 def logout(request: Request):
+    auth.require_user(request)
+    auth.csrf_guard(request)
     response = JSONResponse({"ok": True})
     auth.destroy_session(request, response)
     return response
@@ -92,7 +102,8 @@ def _require_user(request: Request):
 def manual_run(payload: ManualRunIn):
     jql = (payload.jql or "").strip() or None
     run_id = runner.create_run(trigger="manual", jql_label="override" if jql else "config")
-    threading.Thread(target=runner.process_run, args=(run_id, jql), daemon=True).start()
+    sources = set(payload.sources) if payload.sources is not None else None
+    threading.Thread(target=runner.process_run, args=(run_id, jql, sources), daemon=True).start()
     return {"run_id": run_id, "status": "queued"}
 
 
@@ -316,6 +327,12 @@ def edit_plan(plan_id: int, payload: EditPlanIn, db: Session = Depends(get_sessi
         for a in payload.actions:
             if a.kind not in allowed_set:
                 raise HTTPException(422, f"action '{a.kind}' not allowed by path '{plan.path_id}'")
+        for a in payload.actions:
+            if a.kind == "push_branch":
+                patch = str(a.params.get("patch", ""))
+                patch_sha = str(a.params.get("patch_sha", ""))
+                if not patch or not patch_sha or gitutil.patch_sha(patch) != patch_sha:
+                    raise HTTPException(422, "push_branch patch hash does not match its captured patch")
         plan.actions.clear()
         for i, a in enumerate(payload.actions):
             plan.actions.append(Action(seq=i, kind=a.kind, params=a.params,
@@ -343,7 +360,7 @@ def _execute_approved(plan_id: int) -> None:
                           workspace=settings.workspace)
         status, results = execute_plan(ctx, plan, allowed)
         plan.review_status = status if status == "executed" else "failed"
-        plan.error = "; ".join(r for r in results if r.startswith("FAIL"))
+        plan.error = "; ".join(r for r in results if r.startswith(("FAIL", "SKIP")))
         plan.executed_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as e:  # noqa: BLE001

@@ -1,9 +1,12 @@
 """GitHub REST lookups (context enrichment). Mock variant for dev runs."""
 from __future__ import annotations
 
+import logging
+
 import requests
 
 REQUEST_TIMEOUT = 30
+log = logging.getLogger("assistant.github")
 
 
 class GitHubError(Exception):
@@ -179,9 +182,7 @@ def search_context(settings, key: str, limit: int = 10) -> list[dict]:
                 link["repo"] = repo
                 out.append(link)
         except GitHubError as e:
-            from ..config import get_logger
-
-            get_logger().warning("repo search %s: %s", repo, e)
+            log.warning("repo search %s: %s", repo, e)
     return out
 
 

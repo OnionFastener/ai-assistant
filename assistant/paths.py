@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VALID_ACTIONS = {"comment", "transition", "assign", "push_branch", "create_pr", "edit_ticket"}
+VALID_ACTIONS = {"comment", "transition", "assign", "push_branch", "create_pr"}
 PATH_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 

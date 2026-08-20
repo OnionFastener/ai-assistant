@@ -12,12 +12,33 @@ from .config import settings
 
 COOKIE = "asst_session"
 COOKIE_MAX_AGE = 7 * 24 * 3600
+LOGIN_WINDOW = 300
+MAX_LOGIN_ATTEMPTS = 5
 
 _sessions: dict[str, tuple[float, str]] = {}
+_login_attempts: dict[str, list[float]] = {}
 
 
 def verify_password(candidate: str) -> bool:
     return hmac.compare_digest(candidate.encode(), settings.admin_password.encode())
+
+
+def login_allowed(client: str) -> bool:
+    now = time.time()
+    attempts = [ts for ts in _login_attempts.get(client, []) if now - ts < LOGIN_WINDOW]
+    if attempts:
+        _login_attempts[client] = attempts
+    else:
+        _login_attempts.pop(client, None)
+    return len(attempts) < MAX_LOGIN_ATTEMPTS
+
+
+def record_login_failure(client: str) -> None:
+    _login_attempts.setdefault(client, []).append(time.time())
+
+
+def clear_login_failures(client: str) -> None:
+    _login_attempts.pop(client, None)
 
 
 def create_session() -> str:

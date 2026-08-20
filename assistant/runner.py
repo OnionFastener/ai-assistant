@@ -48,15 +48,16 @@ def _stop_requested(db, run, run_id: int) -> bool:
     db.commit()
     _log(db, run_id, "stopped; completed tickets remain in approvals")
     return True
-def process_run(run_id: int, jql_override: str | None = None) -> None:
+def process_run(run_id: int, jql_override: str | None = None,
+                sources: set[str] | None = None) -> None:
     """Run the pipeline in a background thread. Never raises."""
     db = SessionLocal()
     try:
-        _process(db, run_id, jql_override)
+        _process(db, run_id, jql_override, sources)
     except Exception as e:  # noqa: BLE001
         try:
             run = db.get(Run, run_id)
-            if run and run.status in ("queued", "fetching"):
+            if run and run.status not in ("stopped", "completed", "partial", "failed"):
                 run.status = "failed"
                 run.error = str(e)
                 run.finished_at = datetime.now(timezone.utc)
@@ -68,10 +69,11 @@ def process_run(run_id: int, jql_override: str | None = None) -> None:
         db.close()
 
 
-def _process(db, run_id: int, jql_override: str | None) -> None:
+def _process(db, run_id: int, jql_override: str | None,
+             sources: set[str] | None = None) -> None:
     run = db.get(Run, run_id)
     paths = load_paths(settings.paths_dir)
-    jira = build_jira(settings) if settings.scan_jira else None
+    jira = build_jira(settings) if settings.scan_jira and (sources is None or "jira" in sources) else None
 
     import shutil
     shutil.rmtree(settings.workspace / f"run-{run_id}", ignore_errors=True)
@@ -84,7 +86,7 @@ def _process(db, run_id: int, jql_override: str | None) -> None:
     from .issue_sources import fetch_tickets
     tickets_by_key = fetch_tickets(
         settings, jira, jql_override,
-        lambda message: _log(db, run_id, message),
+        lambda message: _log(db, run_id, message), sources=sources,
     )
 
     # Local dedupe on key from pending plans (DESIGN §6): a ticket already waiting

@@ -16,7 +16,6 @@ from .integrations.jira import JiraClient, MockJiraClient
 
 log = logging.getLogger("assistant.executor")
 
-CRITICAL_KINDS = {"push_branch", "create_pr"}
 IMPLEMENTED = ("comment", "transition", "assign", "push_branch", "create_pr")
 
 _HANDLERS: dict[str, callable] = {}
@@ -102,14 +101,17 @@ def _push_branch(ctx: ExecContext, plan, action) -> list[str]:
     branch = str(params.get("branch_name", "")).strip()
     message = str(params.get("commit_msg", "")).strip()
     patch = params.get("patch", "")
+    patch_sha = str(params.get("patch_sha", ""))
     if not branch:
         raise ValueError("push_branch requires 'branch_name'")
     if not patch:
         raise ValueError("push_branch requires the captured 'patch'")
+    if not patch_sha:
+        raise ValueError("push_branch requires the captured patch hash")
 
     dest, repo = _push_repo_dir(ctx, plan, params)
     try:
-        gitutil.apply_patch(dest, patch)                      # hash-verified vs preview
+        gitutil.apply_patch(dest, patch, expected_sha=patch_sha)
         sha = gitutil.commit_all(dest, message or f"Fix {plan.ticket.key}")
         gitutil.push_branch(dest, branch)
     finally:
@@ -190,14 +192,14 @@ def execute_plan(ctx: ExecContext, plan, allowed_actions: set[str]) -> tuple[str
             action.exec_status = "failed"
             action.exec_result = str(e)
             results.append(f"FAIL {action.kind}: {e}")
-            if action.kind in CRITICAL_KINDS:
-                status = "failed"
+            status = "failed"
+            if action.kind in ("push_branch", "create_pr"):
                 break
         except Exception as e:  # noqa: BLE001
             action.exec_status = "failed"
             action.exec_result = str(e)
             results.append(f"FAIL {action.kind}: {e}")
-            if action.kind in CRITICAL_KINDS:
-                status = "failed"
+            status = "failed"
+            if action.kind in ("push_branch", "create_pr"):
                 break
     return status, results
